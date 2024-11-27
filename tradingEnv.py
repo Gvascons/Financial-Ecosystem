@@ -231,7 +231,7 @@ class TradingEnv(gym.Env):
         # Stting of some local variables
         t = self.t
         numberOfShares = self.numberOfShares
-        customReward = False
+        self.customReward = False  # Reset custom reward flag
 
         # CASE 1: LONG POSITION
         if(action == 1):
@@ -268,7 +268,7 @@ class TradingEnv(gym.Env):
                     self.numberOfShares -= numberOfSharesToBuy
                     self.data['Cash'][t] = self.data['Cash'][t - 1] - numberOfSharesToBuy * self.data['Close'][t] * (1 + self.transactionCosts)
                     self.data['Holdings'][t] =  - self.numberOfShares * self.data['Close'][t]
-                    customReward = True
+                    self.customReward = True
             # Case b: No position -> Short
             elif(self.data['Position'][t - 1] == 0):
                 self.numberOfShares = math.floor(self.data['Cash'][t - 1]/(self.data['Close'][t] * (1 + self.transactionCosts)))
@@ -290,12 +290,9 @@ class TradingEnv(gym.Env):
         # Update the total amount of money owned by the agent, as well as the return generated
         self.data['Money'][t] = self.data['Holdings'][t] + self.data['Cash'][t]
         self.data['Returns'][t] = (self.data['Money'][t] - self.data['Money'][t-1])/self.data['Money'][t-1]
-
-        # Set the RL reward returned to the trading agent
-        if not customReward:
-            self.reward = self.data['Returns'][t]
-        else:
-            self.reward = (self.data['Close'][t-1] - self.data['Close'][t])/self.data['Close'][t-1]
+        
+        # Calculate reward using the enhanced method
+        self.reward = self.calculate_reward()
 
         # Transition to the next trading time step
         self.t = self.t + 1
@@ -309,7 +306,7 @@ class TradingEnv(gym.Env):
 
         # Same reasoning with the other action (exploration trick)
         otherAction = int(not bool(action))
-        customReward = False
+        self.customReward = False  # Reset custom reward flag
         if(otherAction == 1):
             otherPosition = 1
             if(self.data['Position'][t - 1] == 1):
@@ -336,7 +333,7 @@ class TradingEnv(gym.Env):
                     numberOfShares -= numberOfSharesToBuy
                     otherCash = self.data['Cash'][t - 1] - numberOfSharesToBuy * self.data['Close'][t] * (1 + self.transactionCosts)
                     otherHoldings =  - numberOfShares * self.data['Close'][t]
-                    customReward = True
+                    self.customReward = True
             elif(self.data['Position'][t - 1] == 0):
                 numberOfShares = math.floor(self.data['Cash'][t - 1]/(self.data['Close'][t] * (1 + self.transactionCosts)))
                 otherCash = self.data['Cash'][t - 1] + numberOfShares * self.data['Close'][t] * (1 - self.transactionCosts)
@@ -347,7 +344,7 @@ class TradingEnv(gym.Env):
                 otherCash = otherCash + numberOfShares * self.data['Close'][t] * (1 - self.transactionCosts)
                 otherHoldings = - self.numberOfShares * self.data['Close'][t]
         otherMoney = otherHoldings + otherCash
-        if not customReward:
+        if not self.customReward:
             otherReward = (otherMoney - self.data['Money'][t-1])/self.data['Money'][t-1]
         else:
             otherReward = (self.data['Close'][t-1] - self.data['Close'][t])/self.data['Close'][t-1]
@@ -425,3 +422,48 @@ class TradingEnv(gym.Env):
                       [self.data['Position'][self.t - 1]]]
         if(self.t == self.data.shape[0]):
             self.done = 1
+    
+    def calculate_reward(self):
+        """
+        Enhanced reward function that considers multiple trading objectives while
+        maintaining compatibility with the existing trading logic.
+        """
+        # If it's a custom reward case (specific short position scenario)
+        if self.customReward:
+            return (self.data['Close'][self.t-1] - self.data['Close'][self.t])/self.data['Close'][self.t-1]
+        
+        # Standard case: Enhanced reward calculation
+        # Base return (already includes transaction costs)
+        base_return = self.data['Returns'][self.t]
+        
+        # Calculate risk-adjusted components
+        lookback = min(self.stateLength, self.t)
+        returns = self.data['Returns'][max(0, self.t - lookback):self.t]
+        
+        # Downside risk (Sortino ratio component)
+        downside_returns = returns[returns < 0]
+        downside_risk = np.std(downside_returns) if len(downside_returns) > 0 else 0
+        risk_penalty = -0.1 * downside_risk
+        
+        # Position holding incentive (reduce excessive trading)
+        position_change = abs(self.data['Position'][self.t] - self.data['Position'][self.t-1])
+        trading_penalty = -0.001 * position_change
+        
+        # Trend alignment bonus (reward for following the trend)
+        price_trend = (self.data['Close'][self.t] - self.data['Close'][self.t-1]) / self.data['Close'][self.t-1]
+        position = self.data['Position'][self.t]
+        trend_alignment = 0.1 * price_trend * position  # Positive when position aligns with trend
+        
+        # Combine components with weights
+        reward = (
+            1.0 * base_return +  # Main return component
+            0.3 * risk_penalty +  # Risk adjustment
+            0.2 * trading_penalty +  # Trading frequency penalty
+            0.2 * trend_alignment  # Trend alignment bonus
+        )
+        
+        # Scale reward for better learning stability
+        reward = np.clip(reward * 10, -1, 1)
+        
+        return reward
+    
