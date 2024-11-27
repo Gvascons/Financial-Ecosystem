@@ -30,15 +30,18 @@ if not os.path.exists('Figs'):
 PPO_PARAMS = {
     'CLIP_EPSILON': 0.2,
     'VALUE_LOSS_COEF': 0.5,
-    'ENTROPY_COEF': 0.01,
+    'ENTROPY_COEF': 0.02,
     'PPO_EPOCHS': 4,
-    'BATCH_SIZE': 64,
+    'BATCH_SIZE': 128,
     'GAMMA': 0.99,
     'GAE_LAMBDA': 0.95,
-    'LEARNING_RATE': 3e-4,
+    'LEARNING_RATE': 1e-4,
     'MAX_GRAD_NORM': 0.5,
     'HIDDEN_SIZE': 256,
     'MEMORY_SIZE': 10000,
+    'LSTM_HIDDEN_SIZE': 128,
+    'LSTM_LAYERS': 2,
+    'LSTM_DROPOUT': 0.2,
 }
 
 class PPONetwork(nn.Module):
@@ -46,55 +49,98 @@ class PPONetwork(nn.Module):
         super().__init__()
         
         self.feature_dim = PPO_PARAMS['HIDDEN_SIZE']
+        self.lstm_hidden_size = PPO_PARAMS['LSTM_HIDDEN_SIZE']
+        self.lstm_layers = PPO_PARAMS['LSTM_LAYERS']
         
-        # Feature extraction layers with layer normalization
+        # Add layer normalization to LSTM
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=self.lstm_hidden_size,
+            num_layers=self.lstm_layers,
+            batch_first=True,
+            dropout=PPO_PARAMS['LSTM_DROPOUT']
+        )
+        self.lstm_norm = nn.LayerNorm(self.lstm_hidden_size)
+        
+        # Residual connections in shared layers
         self.shared = nn.Sequential(
-            nn.Linear(input_size, self.feature_dim),
+            nn.Linear(self.lstm_hidden_size, self.feature_dim),
             nn.LayerNorm(self.feature_dim),
             nn.ReLU(),
-            nn.Linear(self.feature_dim, self.feature_dim),
-            nn.LayerNorm(self.feature_dim),
-            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(self.feature_dim, self.feature_dim // 2),
             nn.LayerNorm(self.feature_dim // 2),
             nn.ReLU(),
+            nn.Dropout(0.1),
         )
         
-        # Actor head with smaller architecture
+        # Separate normalization layers for actor and critic
         self.actor = nn.Sequential(
             nn.Linear(self.feature_dim // 2, self.feature_dim // 4),
+            nn.LayerNorm(self.feature_dim // 4),
             nn.ReLU(),
             nn.Linear(self.feature_dim // 4, num_actions)
         )
         
-        # Critic head with smaller architecture
         self.critic = nn.Sequential(
             nn.Linear(self.feature_dim // 2, self.feature_dim // 4),
+            nn.LayerNorm(self.feature_dim // 4),
             nn.ReLU(),
             nn.Linear(self.feature_dim // 4, 1)
         )
         
-        # Initialize weights with smaller values
-        self.apply(self._init_weights)
-    
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.orthogonal_(module.weight, gain=0.1)
-            if module.bias is not None:
-                module.bias.data.zero_()
+        # Initialize weights and hidden state
+        self._init_weights()
+        self.hidden = None
+
+    def _init_weights(self):
+        """Initialize network weights using Xavier initialization"""
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+            elif isinstance(module, nn.LSTM):
+                for name, param in module.named_parameters():
+                    if 'weight' in name:
+                        nn.init.xavier_uniform_(param)
+                    elif 'bias' in name:
+                        nn.init.constant_(param, 0.0)
+
+    def init_hidden(self, batch_size, device):
+        """Initialize LSTM hidden state"""
+        return (torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(device),
+                torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(device))
 
     def forward(self, x):
-        # Convert input to tensor if it's not already
+        # Handle input preprocessing
         if isinstance(x, list):
             x = torch.FloatTensor(x).to(self.actor[0].weight.device)
         elif isinstance(x, np.ndarray):
             x = torch.FloatTensor(x).to(self.actor[0].weight.device)
         
+        batch_size = x.size(0) if len(x.shape) > 1 else 1
+        
+        # Reshape input for LSTM if necessary
         if len(x.shape) == 1:
             x = x.unsqueeze(0)
+        if len(x.shape) == 2:
+            x = x.unsqueeze(1)  # Add sequence length dimension
             
-        features = self.shared(x)
-        action_probs = F.softmax(self.actor(features), dim=-1)
+        # Initialize hidden state if needed
+        if self.hidden is None or self.hidden[0].size(1) != batch_size:
+            self.hidden = self.init_hidden(batch_size, x.device)
+            
+        # Process through LSTM with normalization
+        lstm_out, self.hidden = self.lstm(x, self.hidden)
+        lstm_out = self.lstm_norm(lstm_out[:, -1, :])
+        
+        # Process through shared layers
+        features = self.shared(lstm_out)
+        
+        # Get action probabilities and value with temperature scaling
+        action_logits = self.actor(features)
+        action_probs = F.softmax(action_logits / 1.0, dim=-1)  # Temperature scaling
         value = self.critic(features)
         
         return action_probs, value
@@ -221,6 +267,11 @@ class PPO:
         # Convert to tensor
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
+        # Reset LSTM hidden state for new sequences
+        if self.prev_state is None or not torch.equal(state, self.prev_state):
+            self.network.hidden = None
+        self.prev_state = state.clone()
+        
         with torch.no_grad():
             probs, value = self.network(state)
             dist = Categorical(probs)
@@ -285,6 +336,9 @@ class PPO:
                 batch_advantages = advantages[batch_indices]
                 batch_old_log_probs = old_log_probs[batch_indices]
                 
+                # Reset LSTM hidden state for each batch
+                self.network.hidden = None
+                
                 # Get current policy outputs
                 probs, values = self.network(batch_states)
                 dist = Categorical(probs)
@@ -310,7 +364,7 @@ class PPO:
                 self.optimizer.step()
                 
                 # Log metrics
-                if self.writer is not None:
+                if hasattr(self, 'writer') and self.writer is not None:
                     self.writer.add_scalar('Loss/total', loss.item(), self.training_step)
                     self.writer.add_scalar('Loss/policy', policy_loss.item(), self.training_step)
                     self.writer.add_scalar('Loss/value', value_loss.item(), self.training_step)
@@ -318,6 +372,7 @@ class PPO:
                 
                 self.training_step += 1
         
+        # Clear memory after updates
         self.memory.clear()
 
     def training(self, trainingEnv, trainingParameters=[], verbose=True, rendering=True, plotTraining=True, showPerformance=True):
@@ -562,3 +617,4 @@ class PPO:
         
         if os.path.exists(src_path):
             shutil.move(src_path, dst_path)
+
