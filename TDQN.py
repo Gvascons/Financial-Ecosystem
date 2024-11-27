@@ -15,6 +15,7 @@ import math
 import random
 import copy
 import datetime
+import shutil
 
 import numpy as np
 
@@ -33,6 +34,11 @@ from tradingPerformance import PerformanceEstimator
 from dataAugmentation import DataAugmentation
 from tradingEnv import TradingEnv
 
+import os
+
+# Create Figures directory if it doesn't exist
+if not os.path.exists('Figs'):
+    os.makedirs('Figs')
 
 
 ###############################################################################
@@ -312,8 +318,8 @@ class TDQN:
                                      (Epsilon-Greedy exploration technique).        
     """
 
-    def __init__(self, observationSpace, actionSpace, numberOfNeurons=numberOfNeurons, dropout=dropout, 
-                 gamma=gamma, learningRate=learningRate, targetNetworkUpdate=targetNetworkUpdate,
+    def __init__(self, observationSpace, actionSpace, marketSymbol='UNKNOWN', numberOfNeurons=numberOfNeurons, 
+                 dropout=dropout, gamma=gamma, learningRate=learningRate, targetNetworkUpdate=targetNetworkUpdate,
                  epsilonStart=epsilonStart, epsilonEnd=epsilonEnd, epsilonDecay=epsilonDecay,
                  capacity=capacity, batchSize=batchSize):
         """
@@ -323,17 +329,15 @@ class TDQN:
         
         INPUTS: - observationSpace: Size of the RL observation space.
                 - actionSpace: Size of the RL action space.
+                - marketSymbol: Trading symbol for the stock (e.g. 'AAPL', 'AMZN')
                 - numberOfNeurons: Number of neurons per layer in the Deep Neural Network.
                 - dropout: Droupout probability value (handling of overfitting).
                 - gamma: Discount factor of the DQN algorithm.
                 - learningRate: Learning rate of the ADAM optimizer.
                 - targetNetworkUpdate: Update frequency of the target network.
-                - epsilonStart: Initial (maximum) value of Epsilon, from the
-                                Epsilon-Greedy exploration technique.
-                - epsilonEnd: Final (minimum) value of Epsilon, from the
-                                Epsilon-Greedy exploration technique.
-                - epsilonDecay: Decay factor (exponential) of Epsilon, from the
-                                Epsilon-Greedy exploration technique.
+                - epsilonStart: Initial (maximum) value of Epsilon
+                - epsilonEnd: Final (minimum) value of Epsilon
+                - epsilonDecay: Decay factor (exponential) of Epsilon
                 - capacity: Capacity of the Experience Replay memory.
                 - batchSize: Size of the batch to sample from the replay memory.        
         
@@ -376,8 +380,14 @@ class TDQN:
         # Initialization of the iterations counter
         self.iterations = 0
 
-        # Initialization of the tensorboard writer
-        self.writer = SummaryWriter('runs/' + datetime.datetime.now().strftime("%d/%m/%Y-%H:%M:%S"))
+        # Store market symbol
+        self.marketSymbol = marketSymbol
+        
+        # Initialize writer and directories as None - we'll create them when training starts
+        self.writer = None
+        self.run_id = None
+        self.figures_dir = None
+        self.results_dir = None
 
     
     def getNormalizationCoefficients(self, tradingEnv):
@@ -619,50 +629,46 @@ class TDQN:
             self.policyNetwork.eval()
 
 
-    def training(self, trainingEnv, trainingParameters=[],
-                 verbose=False, rendering=False, plotTraining=False, showPerformance=False):
+    def training(self, trainingEnv, trainingParameters=[], verbose=True, rendering=True, plotTraining=True, showPerformance=True):
         """
         GOAL: Train the RL trading agent by interacting with its trading environment.
-        
-        INPUTS: - trainingEnv: Training RL environment (known).
-                - trainingParameters: Additional parameters associated
-                                      with the training phase (e.g. the number
-                                      of episodes).  
-                - verbose: Enable the printing of a training feedback.
-                - rendering: Enable the training environment rendering.
-                - plotTraining: Enable the plotting of the training results.
-                - showPerformance: Enable the printing of a table summarizing
-                                   the trading strategy performance.
-        
-        OUTPUTS: - trainingEnv: Training RL environment.
         """
-
-        """
-        # Compute and plot the expected performance of the trading policy
-        trainingEnv = self.plotExpectedPerformance(trainingEnv, trainingParameters, iterations=50)
-        return trainingEnv
-        """
-
-        # Apply data augmentation techniques to improve the training set
-        dataAugmentation = DataAugmentation()
-        trainingEnvList = dataAugmentation.generate(trainingEnv)
-
-        # Initialization of some variables tracking the training and testing performances
-        if plotTraining:
-            # Training performance
-            performanceTrain = []
-            score = np.zeros((len(trainingEnvList), trainingParameters[0]))
-            # Testing performance
-            marketSymbol = trainingEnv.marketSymbol
-            startingDate = trainingEnv.endingDate
-            endingDate = '2020-1-1'
-            money = trainingEnv.data['Money'][0]
-            stateLength = trainingEnv.stateLength
-            transactionCosts = trainingEnv.transactionCosts
-            testingEnv = TradingEnv(marketSymbol, startingDate, endingDate, money, stateLength, transactionCosts)
-            performanceTest = []
-
         try:
+            # Create run-specific directories and ID
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_id = f"TDQN_{trainingEnv.marketSymbol}_{timestamp}"
+            
+            # Create base directories
+            self.figures_dir = os.path.join('Figs', f'run_{self.run_id}')
+            os.makedirs(self.figures_dir, exist_ok=True)
+            os.makedirs('Results', exist_ok=True)
+            
+            # Initialize tensorboard writer
+            self.writer = SummaryWriter(f'runs/run_{self.run_id}')
+            
+            # Pass the directories to the training environment
+            trainingEnv.figures_dir = self.figures_dir
+            trainingEnv.results_dir = self.results_dir
+            
+            # Apply data augmentation techniques to improve the training set
+            dataAugmentation = DataAugmentation()
+            trainingEnvList = dataAugmentation.generate(trainingEnv)
+
+            # Initialization of some variables tracking the training and testing performances
+            if plotTraining:
+                # Training performance
+                performanceTrain = []
+                score = np.zeros((len(trainingEnvList), trainingParameters[0]))
+                # Testing performance
+                marketSymbol = trainingEnv.marketSymbol
+                startingDate = trainingEnv.endingDate
+                endingDate = '2020-1-1'
+                money = trainingEnv.data['Money'][0]
+                stateLength = trainingEnv.stateLength
+                transactionCosts = trainingEnv.transactionCosts
+                testingEnv = TradingEnv(marketSymbol, startingDate, endingDate, money, stateLength, transactionCosts)
+                performanceTest = []
+
             # If required, print the training progression
             if verbose:
                 print("Training progression (hardware selected => " + str(self.device) + "):")
@@ -743,106 +749,104 @@ class TDQN:
                     self.writer.add_scalar('Testing performance (Sharpe Ratio)', performance, episode)
                     testingEnv.reset()
         
-        except KeyboardInterrupt:
-            print()
-            print("WARNING: Training prematurely interrupted...")
-            print()
-            self.policyNetwork.eval()
+            # Assess the algorithm performance on the training trading environment
+            trainingEnv = self.testing(trainingEnv, trainingEnv)
 
-        # Assess the algorithm performance on the training trading environment
-        trainingEnv = self.testing(trainingEnv, trainingEnv)
+            # If required, show the rendering of the trading environment
+            if rendering:
+                self.render_to_dir(trainingEnv)
 
-        # If required, show the rendering of the trading environment
-        if rendering:
-            trainingEnv.render()
+            # If required, plot the training results
+            if plotTraining:
+                fig = plt.figure()
+                ax = fig.add_subplot(111, ylabel='Performance (Sharpe Ratio)', xlabel='Episode')
+                ax.plot(performanceTrain)
+                ax.plot(performanceTest)
+                ax.legend(["Training", "Testing"])
+                plt.savefig(os.path.join(self.figures_dir, f'TrainingTestingPerformance.png'))
+                plt.close(fig)
+                
+                for i in range(len(trainingEnvList)):
+                    self.plotTraining(score[i][:episode])
 
-        # If required, plot the training results
-        if plotTraining:
-            fig = plt.figure()
-            ax = fig.add_subplot(111, ylabel='Performance (Sharpe Ratio)', xlabel='Episode')
-            ax.plot(performanceTrain)
-            ax.plot(performanceTest)
-            ax.legend(["Training", "Testing"])
-            plt.savefig(''.join(['Figures/', str(marketSymbol), '_TrainingTestingPerformance', '.png']))
-            #plt.show()
-            for i in range(len(trainingEnvList)):
-                self.plotTraining(score[i][:episode], marketSymbol)
-
-        # If required, print the strategy performance in a table
-        if showPerformance:
-            analyser = PerformanceEstimator(trainingEnv.data)
-            analyser.displayPerformance('TDQN')
+            # If required, print and save the strategy performance
+            if showPerformance:
+                analyser = PerformanceEstimator(trainingEnv.data)
+                analyser.run_id = self.run_id  # Pass the full run_id
+                analyser.displayPerformance('TDQN', phase='training')
+            
+            return trainingEnv
         
-        # Closing of the tensorboard writer
-        self.writer.close()
-        
-        return trainingEnv
+        except Exception as e:
+            print(f"Training error: {str(e)}")
+            raise
+        finally:
+            if self.writer is not None:
+                self.writer.flush()  # Ensure all pending events are written
 
 
     def testing(self, trainingEnv, testingEnv, rendering=False, showPerformance=False):
         """
-        GOAL: Test the RL agent trading policy on a new trading environment
-              in order to assess the trading strategy performance.
+        GOAL: Apply the trained Deep Neural Network on a testing
+              trading environment.
         
-        INPUTS: - trainingEnv: Training RL environment (known).
-                - testingEnv: Unknown trading RL environment.
-                - rendering: Enable the trading environment rendering.
-                - showPerformance: Enable the printing of a table summarizing
-                                   the trading strategy performance.
+        INPUTS: - trainingEnv: Training environment.
+                - testingEnv: Testing environment.
+                - rendering: Enable the rendering of the environment.
+                - showPerformance: Enable the computation and display
+                                  of the performance indicators.
         
-        OUTPUTS: - testingEnv: Trading environment backtested.
+        OUTPUTS: - testingEnv: Trading environment after testing.
         """
-
-        # Apply data augmentation techniques to process the testing set
-        dataAugmentation = DataAugmentation()
-        testingEnvSmoothed = dataAugmentation.lowPassFilter(testingEnv, filterOrder)
-        trainingEnv = dataAugmentation.lowPassFilter(trainingEnv, filterOrder)
-
-        # Initialization of some RL variables
-        coefficients = self.getNormalizationCoefficients(trainingEnv)
-        state = self.processState(testingEnvSmoothed.reset(), coefficients)
-        testingEnv.reset()
-        QValues0 = []
-        QValues1 = []
-        done = 0
-
-        # Interact with the environment until the episode termination
-        while done == 0:
-
-            # Choose an action according to the RL policy and the current RL state
-            action, _, QValues = self.chooseAction(state)
-                
-            # Interact with the environment with the chosen action
-            nextState, _, done, _ = testingEnvSmoothed.step(action)
-            testingEnv.step(action)
-                
-            # Update the new state
-            state = self.processState(nextState, coefficients)
-
-            # Storing of the Q values
-            QValues0.append(QValues[0])
-            QValues1.append(QValues[1])
-
-        # If required, show the rendering of the trading environment
-        if rendering:
-            testingEnv.render()
-            self.plotQValues(QValues0, QValues1, testingEnv.marketSymbol)
-
-        # If required, print the strategy performance in a table
-        if showPerformance:
-            analyser = PerformanceEstimator(testingEnv.data)
-            analyser.displayPerformance('TDQN')
         
-        return testingEnv
+        try:
+            # Set the DNN in evaluation mode
+            self.policyNetwork.eval()
+            
+            # Reset the testing environment and get the corresponding initial state
+            coefficients = self.getNormalizationCoefficients(trainingEnv)
+            testingEnv.reset()
+            state = self.processState(testingEnv.state, coefficients)
+            done = 0
+            
+            # Interact with the testing environment until termination
+            while done == 0:
+                
+                # Choose an action according to the RL policy and the current RL state
+                with torch.no_grad():
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                    q_values = self.policyNetwork(state_tensor)
+                    action = q_values.max(1)[1].item()  # Get the action with highest Q-value
+                
+                # Interact with the environment with the chosen action
+                nextState, _, done, _ = testingEnv.step(action)
+                
+                # Update the RL state
+                state = self.processState(nextState, coefficients)
+            
+            # If required, show the rendering of the testing environment
+            if rendering:
+                self.render_to_dir(testingEnv)
+                
+            # If required, compute and display the strategy performance
+            if showPerformance:
+                analyser = PerformanceEstimator(testingEnv.data)
+                analyser.run_id = self.run_id
+                analyser.displayPerformance('TDQN', phase='testing')
+                
+            return testingEnv
+            
+        except Exception as e:
+            print(f"Testing error: {str(e)}")
+            raise
 
 
-    def plotTraining(self, score, marketSymbol):
+    def plotTraining(self, score):
         """
         GOAL: Plot the training phase results
               (score, sum of rewards).
         
         INPUTS: - score: Array of total episode rewards.
-                - marketSymbol: Stock market trading symbol.
         
         OUTPUTS: /
         """
@@ -850,17 +854,16 @@ class TDQN:
         fig = plt.figure()
         ax1 = fig.add_subplot(111, ylabel='Total reward collected', xlabel='Episode')
         ax1.plot(score)
-        plt.savefig(''.join(['Figures/', str(marketSymbol), 'TrainingResults', '.png']))
-        #plt.show()
+        plt.savefig(os.path.join(self.figures_dir, f'TrainingResults.png'))
+        plt.close(fig)
 
     
-    def plotQValues(self, QValues0, QValues1, marketSymbol):
+    def plotQValues(self, QValues0, QValues1):
         """
         Plot sequentially the Q values related to both actions.
         
         :param: - QValues0: Array of Q values linked to action 0.
                 - QValues1: Array of Q values linked to action 1.
-                - marketSymbol: Stock market trading symbol.
         
         :return: /
         """
@@ -870,8 +873,8 @@ class TDQN:
         ax1.plot(QValues0)
         ax1.plot(QValues1)
         ax1.legend(['Short', 'Long'])
-        plt.savefig(''.join(['Figures/', str(marketSymbol), '_QValues', '.png']))
-        #plt.show()
+        plt.savefig(os.path.join(self.figures_dir, f'QValues.png'))
+        plt.close(fig)
 
 
     def plotExpectedPerformance(self, trainingEnv, trainingParameters=[], iterations=10):
@@ -1017,19 +1020,25 @@ class TDQN:
             ax.plot([performanceTrain[e][i] for e in range(trainingParameters[0])])
             ax.plot([performanceTest[e][i] for e in range(trainingParameters[0])])
             ax.legend(["Training", "Testing"])
-            plt.savefig(''.join(['Figures/', str(marketSymbol), '_TrainingTestingPerformance', str(i+1), '.png']))
-            #plt.show()
+            plt.savefig(os.path.join(self.figures_dir, 
+                       f'TrainingTestingPerformance_{i+1}.png'))
+            plt.close(fig)
 
         # Plot the expected performance of the intelligent DRL trading agent
         fig = plt.figure()
         ax = fig.add_subplot(111, ylabel='Performance (Sharpe Ratio)', xlabel='Episode')
         ax.plot(expectedPerformanceTrain)
         ax.plot(expectedPerformanceTest)
-        ax.fill_between(range(len(expectedPerformanceTrain)), expectedPerformanceTrain-stdPerformanceTrain, expectedPerformanceTrain+stdPerformanceTrain, alpha=0.25)
-        ax.fill_between(range(len(expectedPerformanceTest)), expectedPerformanceTest-stdPerformanceTest, expectedPerformanceTest+stdPerformanceTest, alpha=0.25)
+        ax.fill_between(range(len(expectedPerformanceTrain)), 
+                       expectedPerformanceTrain-stdPerformanceTrain, 
+                       expectedPerformanceTrain+stdPerformanceTrain, alpha=0.25)
+        ax.fill_between(range(len(expectedPerformanceTest)),
+                       expectedPerformanceTest-stdPerformanceTest,
+                       expectedPerformanceTest+stdPerformanceTest, alpha=0.25)
         ax.legend(["Training", "Testing"])
-        plt.savefig(''.join(['Figures/', str(marketSymbol), '_TrainingTestingExpectedPerformance', '.png']))
-        #plt.show()
+        plt.savefig(os.path.join(self.figures_dir, 
+                   f'TrainingTestingExpectedPerformance.png'))
+        plt.close(fig)
 
         # Closing of the tensorboard writer
         self.writer.close()
@@ -1076,5 +1085,28 @@ class TDQN:
         plt.plot([self.epsilonValue(i) for i in range(10*epsilonDecay)])
         plt.xlabel("Iterations")
         plt.ylabel("Epsilon value")
-        plt.savefig(''.join(['Figures/', 'EpsilonAnnealing', '.png']))
-        #plt.show()
+        plt.savefig(os.path.join(self.figures_dir, 'EpsilonAnnealing.png'))
+        plt.close()
+
+    def render_to_dir(self, env):
+        """
+        GOAL: Render the environment and move the file to the run-specific directory
+        
+        INPUTS: - env: Trading environment to render
+        """
+        # Render using the environment's method
+        env.render()
+        
+        # Move the file from default location to run directory
+        src_path = ''.join(['Figs/', str(env.marketSymbol), '_Rendering', '.png'])
+        dst_path = os.path.join(self.figures_dir, ''.join([str(env.marketSymbol), '_Rendering', '.png']))
+        
+        if os.path.exists(src_path):
+            shutil.move(src_path, dst_path)
+
+    def __del__(self):
+        """
+        Destructor to ensure writer is properly closed when object is deleted
+        """
+        if hasattr(self, 'writer') and self.writer is not None:
+            self.writer.close()

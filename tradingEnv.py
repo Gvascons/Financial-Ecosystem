@@ -156,6 +156,10 @@ class TradingEnv(gym.Env):
         if startingPoint:
             self.setStartingPoint(startingPoint)
 
+        # Add this near the beginning of __init__
+        self.action_space = 2  # 0 for short, 1 for long
+        self.observation_space = 5  # Close, Low, High, Volume, Position
+
 
     def reset(self):
         """
@@ -365,11 +369,10 @@ class TradingEnv(gym.Env):
               evolution of the trading capital. All the trading decisions
               (long and short positions) are displayed as well.
         
-        INPUTS: /   
+        INPUTS: /
         
         OUTPUTS: /
         """
-
         # Set the Matplotlib figure and subplots
         fig = plt.figure(figsize=(10, 8))
         ax1 = fig.add_subplot(211, ylabel='Price', xlabel='Time')
@@ -396,8 +399,9 @@ class TradingEnv(gym.Env):
         # Generation of the two legends and plotting
         ax1.legend(["Price", "Long",  "Short"])
         ax2.legend(["Capital", "Long", "Short"])
-        plt.savefig(''.join(['Figures/', str(self.marketSymbol), '_Rendering', '.png']))
-        #plt.show()
+
+        plt.savefig(''.join(['Figs/', str(self.marketSymbol), '_Rendering', '.png']))
+        plt.close(fig)
 
 
     def setStartingPoint(self, startingPoint):
@@ -421,4 +425,3 @@ class TradingEnv(gym.Env):
                       [self.data['Position'][self.t - 1]]]
         if(self.t == self.data.shape[0]):
             self.done = 1
-    
