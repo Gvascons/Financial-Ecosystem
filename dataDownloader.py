@@ -14,6 +14,8 @@ Institution: University of Liège
 import pandas as pd
 import pandas_datareader as pdr
 import requests
+import yfinance as yf
+import os
 
 from io import StringIO
 
@@ -157,59 +159,68 @@ class AlphaVantage:
 
 class YahooFinance:   
     """
-    GOAL: Downloading stock market data from the Yahoo Finance API. See the
-          pandas.datareader documentation for more information.
-    
+    GOAL: Downloading stock market data from the Yahoo Finance API using yfinance.
+        
     VARIABLES:  - data: Pandas dataframe containing the stock market data.
-                                
+                                    
     METHODS:    - __init__: Object constructor initializing some variables.
                 - getDailyData: Retrieve daily stock market data.
                 - processDataframe: Process a dataframe to homogenize the
                                     output format.
     """
-    
-
+        
     def __init__(self):
         """
         GOAL: Object constructor initializing the class variables. 
-        
-        INPUTS: /      
-        
-        OUTPUTS: /
         """
-        
         self.data = pd.DataFrame()
 
-    
     def getDailyData(self, marketSymbol, startingDate, endingDate):
         """
-        GOAL: Downloding daily stock market data from the Yahoo Finance API. 
-        
+        GOAL: Downloading daily stock market data from Yahoo Finance using yfinance. 
+            
         INPUTS:     - marketSymbol: Stock market symbol.
                     - startingDate: Beginning of the trading horizon.
                     - endingDate: Ending of the trading horizon.
-          
+              
         OUTPUTS:    - data: Pandas dataframe containing the stock market data.
         """
+        # Ensure marketSymbol is a string, not a list
+        if isinstance(marketSymbol, list) and len(marketSymbol) == 1:
+            marketSymbol = marketSymbol[0]
         
-        data = pdr.data.DataReader(marketSymbol, 'yahoo', startingDate, endingDate)
+        data = yf.download(marketSymbol, start=startingDate, end=endingDate)
         self.data = self.processDataframe(data)
         return self.data
-
 
     def processDataframe(self, dataframe):
         """
         GOAL: Process a downloaded dataframe to homogenize the output format.
-        
+            
         INPUTS:     - dataframe: Pandas dataframe to be processed.
-          
+              
         OUTPUTS:    - dataframe: Processed Pandas dataframe.
         """
+        # If columns are multi-level, flatten them
+        if isinstance(dataframe.columns, pd.MultiIndex):
+            # Flatten the columns by taking the first level
+            dataframe.columns = dataframe.columns.get_level_values(0)
         
-        # Remove useless columns
+        # Compute the adjustment factor
+        # adj_factor = dataframe['Adj Close'] / dataframe['Close']
+        
+        # Not considereding the adjustment factor
+        adj_factor = 1.0
+
+        # Adjust the 'Open', 'High', and 'Low' prices
+        dataframe['Open'] = dataframe['Open'] * adj_factor
+        dataframe['High'] = dataframe['High'] * adj_factor
+        dataframe['Low'] = dataframe['Low'] * adj_factor
         dataframe['Close'] = dataframe['Adj Close']
+
+        # Remove 'Adj Close' column
         del dataframe['Adj Close']
-        
+
         # Adapt the dataframe index and column names
         dataframe.index.names = ['Timestamp']
         dataframe = dataframe[['Open', 'High', 'Low', 'Close', 'Volume']]
@@ -225,40 +236,38 @@ class YahooFinance:
 class CSVHandler:
     """
     GOAL: Converting "Pandas dataframe" <-> "CSV file" (bidirectional).
-    
-    VARIABLES: /
-                                
+        
     METHODS:    - dataframeToCSV: Saving a dataframe into a CSV file.
                 - CSVToDataframe: Loading a CSV file into a dataframe.
     """
-    
-    
+        
     def dataframeToCSV(self, name, dataframe):
         """
         GOAL: Saving a dataframe into a CSV file.
-        
+            
         INPUTS:     - name: Name of the CSV file.   
                     - dataframe: Pandas dataframe to be saved.
-          
+              
         OUTPUTS: /
         """
-        
+        # Extract directory path and create if it doesn't exist
+        directory = os.path.dirname(name)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)  # Create missing directories
+
         path = name + '.csv'
-        dataframe.to_csv(path)
-        
-        
+        dataframe.to_csv(path, index_label='Timestamp')
+            
     def CSVToDataframe(self, name):
         """
         GOAL: Loading a CSV file into a dataframe.
-        
+            
         INPUTS:     - name: Name of the CSV file.   
-          
+              
         OUTPUTS:    - dataframe: Pandas dataframe loaded.
         """
-        
         path = name + '.csv'
         return pd.read_csv(path,
                            header=0,
                            index_col='Timestamp',
                            parse_dates=True)
-    
