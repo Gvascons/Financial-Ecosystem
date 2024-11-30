@@ -19,7 +19,8 @@ import os
 
 from io import StringIO
 
-
+# Import pandas_ta for technical indicators
+import pandas_ta as ta
 
 ###############################################################################
 ############################## Class AlphaVantage #############################
@@ -162,7 +163,7 @@ class YahooFinance:
     GOAL: Downloading stock market data from the Yahoo Finance API using yfinance.
         
     VARIABLES:  - data: Pandas dataframe containing the stock market data.
-                                    
+                                
     METHODS:    - __init__: Object constructor initializing some variables.
                 - getDailyData: Retrieve daily stock market data.
                 - processDataframe: Process a dataframe to homogenize the
@@ -207,10 +208,7 @@ class YahooFinance:
             dataframe.columns = dataframe.columns.get_level_values(0)
         
         # Compute the adjustment factor
-        # adj_factor = dataframe['Adj Close'] / dataframe['Close']
-        
-        # Not considereding the adjustment factor
-        adj_factor = 1.0
+        adj_factor = dataframe['Adj Close'] / dataframe['Close']
 
         # Adjust the 'Open', 'High', and 'Low' prices
         dataframe['Open'] = dataframe['Open'] * adj_factor
@@ -224,6 +222,52 @@ class YahooFinance:
         # Adapt the dataframe index and column names
         dataframe.index.names = ['Timestamp']
         dataframe = dataframe[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+        # Add technical indicators
+        dataframe = self.addTechnicalIndicators(dataframe)
+
+        return dataframe
+
+    def addTechnicalIndicators(self, dataframe):
+        """
+        GOAL: Add technical indicators to the dataframe.
+
+        INPUTS:     - dataframe: Pandas dataframe with stock data.
+
+        OUTPUTS:    - dataframe: Pandas dataframe with technical indicators added.
+        """
+        # Add Simple Moving Averages (SMA)
+        dataframe['SMA_10'] = ta.sma(dataframe['Close'], length=10)
+        dataframe['SMA_20'] = ta.sma(dataframe['Close'], length=20)
+
+        # Add Exponential Moving Averages (EMA)
+        dataframe['EMA_10'] = ta.ema(dataframe['Close'], length=10)
+        dataframe['EMA_20'] = ta.ema(dataframe['Close'], length=20)
+
+        # Add Relative Strength Index (RSI)
+        dataframe['RSI_14'] = ta.rsi(dataframe['Close'], length=14)
+
+        # Add Moving Average Convergence Divergence (MACD)
+        macd = ta.macd(dataframe['Close'])
+        dataframe['MACD'] = macd['MACD_12_26_9']
+        dataframe['MACD_Signal'] = macd['MACDs_12_26_9']
+        dataframe['MACD_Hist'] = macd['MACDh_12_26_9']
+
+        # Add Bollinger Bands
+        bollinger = ta.bbands(dataframe['Close'], length=20, std=2)
+        dataframe['BB_Middle'] = bollinger['BBM_20_2.0']
+        dataframe['BB_Upper'] = bollinger['BBU_20_2.0']
+        dataframe['BB_Lower'] = bollinger['BBL_20_2.0']
+
+        # Add Average True Range (ATR)
+        dataframe['ATR_14'] = ta.atr(dataframe['High'], dataframe['Low'], dataframe['Close'], length=14)
+
+        # Add On-Balance Volume (OBV)
+        dataframe['OBV'] = ta.obv(dataframe['Close'], dataframe['Volume'])
+
+        # Fill any NaN values that may have been introduced by the indicators
+        dataframe.fillna(method='ffill', inplace=True)
+        dataframe.fillna(method='bfill', inplace=True)
 
         return dataframe
 

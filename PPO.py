@@ -48,21 +48,25 @@ class PPONetwork(nn.Module):
     def __init__(self, input_size, num_actions):
         super().__init__()
         
+        # Calculate actual number of features (divide total input size by sequence length)
+        self.num_features = 18  # Total number of features (17 market features + 1 position)
+        self.sequence_length = 30  # Length of each sequence
         self.feature_dim = PPO_PARAMS['HIDDEN_SIZE']
         self.lstm_hidden_size = PPO_PARAMS['LSTM_HIDDEN_SIZE']
         self.lstm_layers = PPO_PARAMS['LSTM_LAYERS']
         
-        # Add layer normalization to LSTM
+        # LSTM expects input shape: [batch, sequence_length, num_features]
         self.lstm = nn.LSTM(
-            input_size=input_size,
+            input_size=self.num_features,
             hidden_size=self.lstm_hidden_size,
             num_layers=self.lstm_layers,
             batch_first=True,
             dropout=PPO_PARAMS['LSTM_DROPOUT']
         )
+        
         self.lstm_norm = nn.LayerNorm(self.lstm_hidden_size)
         
-        # Residual connections in shared layers
+        # Rest of the network architecture remains the same
         self.shared = nn.Sequential(
             nn.Linear(self.lstm_hidden_size, self.feature_dim),
             nn.LayerNorm(self.feature_dim),
@@ -74,7 +78,6 @@ class PPONetwork(nn.Module):
             nn.Dropout(0.1),
         )
         
-        # Separate normalization layers for actor and critic
         self.actor = nn.Sequential(
             nn.Linear(self.feature_dim // 2, self.feature_dim // 4),
             nn.LayerNorm(self.feature_dim // 4),
@@ -89,7 +92,6 @@ class PPONetwork(nn.Module):
             nn.Linear(self.feature_dim // 4, 1)
         )
         
-        # Initialize weights and hidden state
         self._init_weights()
         self.hidden = None
 
@@ -113,34 +115,41 @@ class PPONetwork(nn.Module):
                 torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(device))
 
     def forward(self, x):
+        """
+        Forward pass of the network.
+        Expected input shape: [batch_size, num_features, sequence_length]
+        """
         # Handle input preprocessing
         if isinstance(x, list):
             x = torch.FloatTensor(x).to(self.actor[0].weight.device)
         elif isinstance(x, np.ndarray):
             x = torch.FloatTensor(x).to(self.actor[0].weight.device)
         
-        batch_size = x.size(0) if len(x.shape) > 1 else 1
-        
-        # Reshape input for LSTM if necessary
-        if len(x.shape) == 1:
-            x = x.unsqueeze(0)
+        # Add batch dimension if needed
         if len(x.shape) == 2:
-            x = x.unsqueeze(1)  # Add sequence length dimension
-            
+            x = x.unsqueeze(0)
+        
+        # Reshape from [batch, features, sequence] to [batch, sequence, features]
+        x = x.permute(0, 2, 1)
+        
+        batch_size = x.size(0)
+        
         # Initialize hidden state if needed
         if self.hidden is None or self.hidden[0].size(1) != batch_size:
             self.hidden = self.init_hidden(batch_size, x.device)
-            
-        # Process through LSTM with normalization
+        
+        # Process through LSTM
         lstm_out, self.hidden = self.lstm(x, self.hidden)
+        
+        # Take the last output and normalize
         lstm_out = self.lstm_norm(lstm_out[:, -1, :])
         
         # Process through shared layers
         features = self.shared(lstm_out)
         
-        # Get action probabilities and value with temperature scaling
+        # Get action probabilities and value
         action_logits = self.actor(features)
-        action_probs = F.softmax(action_logits / 1.0, dim=-1)  # Temperature scaling
+        action_probs = F.softmax(action_logits / 1.0, dim=-1)
         value = self.critic(features)
         
         return action_probs, value
@@ -210,50 +219,47 @@ class PPO:
     def processState(self, state, coefficients):
         """
         Process the RL state returned by the environment
-        (appropriate format and normalization), similar to TDQN
+        (appropriate format and normalization)
         """
-        # Normalization of the RL state
-        closePrices = [state[0][i] for i in range(len(state[0]))]
-        lowPrices = [state[1][i] for i in range(len(state[1]))]
-        highPrices = [state[2][i] for i in range(len(state[2]))]
-        volumes = [state[3][i] for i in range(len(state[3]))]
-
+        # Create a copy of the state to avoid modifying the original
+        processed_state = state.copy()
+        
+        # Get the sequences
+        closePrices = processed_state[0]
+        lowPrices = processed_state[1]
+        highPrices = processed_state[2]
+        volumes = processed_state[3]
+        
         # 1. Close price => returns => MinMax normalization
-        returns = [(closePrices[i]-closePrices[i-1])/closePrices[i-1] for i in range(1, len(closePrices))]
+        returns = np.zeros_like(closePrices)
+        returns[1:] = np.diff(closePrices) / closePrices[:-1]  # Calculate returns
         if coefficients[0][0] != coefficients[0][1]:
-            state[0] = [((x - coefficients[0][0])/(coefficients[0][1] - coefficients[0][0])) for x in returns]
-        else:
-            state[0] = [0 for x in returns]
+            returns = np.clip((returns - coefficients[0][0]) / (coefficients[0][1] - coefficients[0][0]), -1, 1)
+        processed_state[0] = returns
+        
         # 2. Low/High prices => Delta prices => MinMax normalization
-        deltaPrice = [abs(highPrices[i]-lowPrices[i]) for i in range(1, len(lowPrices))]
+        deltaPrice = np.abs(highPrices - lowPrices)
         if coefficients[1][0] != coefficients[1][1]:
-            state[1] = [((x - coefficients[1][0])/(coefficients[1][1] - coefficients[1][0])) for x in deltaPrice]
-        else:
-            state[1] = [0 for x in deltaPrice]
+            deltaPrice = np.clip((deltaPrice - coefficients[1][0]) / (coefficients[1][1] - coefficients[1][0]), 0, 1)
+        processed_state[1] = deltaPrice
+        
         # 3. Close/Low/High prices => Close price position => No normalization required
-        closePricePosition = []
-        for i in range(1, len(closePrices)):
-            deltaPrice = abs(highPrices[i]-lowPrices[i])
-            if deltaPrice != 0:
-                item = abs(closePrices[i]-lowPrices[i])/deltaPrice
-            else:
-                item = 0.5
-            closePricePosition.append(item)
+        closePricePosition = np.zeros_like(closePrices)
+        delta = np.abs(highPrices - lowPrices)
+        mask = delta != 0
+        closePricePosition[mask] = np.abs(closePrices[mask] - lowPrices[mask]) / delta[mask]
+        closePricePosition[~mask] = 0.5
         if coefficients[2][0] != coefficients[2][1]:
-            state[2] = [((x - coefficients[2][0])/(coefficients[2][1] - coefficients[2][0])) for x in closePricePosition]
-        else:
-            state[2] = [0.5 for x in closePricePosition]
+            closePricePosition = np.clip((closePricePosition - coefficients[2][0]) / 
+                                       (coefficients[2][1] - coefficients[2][0]), 0, 1)
+        processed_state[2] = closePricePosition
+        
         # 4. Volumes => MinMax normalization
-        volumes = [volumes[i] for i in range(1, len(volumes))]
         if coefficients[3][0] != coefficients[3][1]:
-            state[3] = [((x - coefficients[3][0])/(coefficients[3][1] - coefficients[3][0])) for x in volumes]
-        else:
-            state[3] = [0 for x in volumes]
-
-        # Process the state structure to obtain the appropriate format
-        state = [item for sublist in state for item in sublist]
-
-        return state
+            volumes = np.clip((volumes - coefficients[3][0]) / (coefficients[3][1] - coefficients[3][0]), 0, 1)
+        processed_state[3] = volumes
+        
+        return processed_state
 
     def processReward(self, reward):
         """
@@ -297,16 +303,31 @@ class PPO:
         if len(self.memory) < PPO_PARAMS['BATCH_SIZE']:
             return
         
-        # Convert stored transitions to tensors
-        states = torch.FloatTensor([t['state'] for t in self.memory]).to(self.device)
-        actions = torch.LongTensor([t['action'] for t in self.memory]).to(self.device)
-        rewards = torch.FloatTensor([t['reward'] for t in self.memory]).to(self.device)
-        next_states = torch.FloatTensor([t['next_state'] for t in self.memory]).to(self.device)
-        dones = torch.FloatTensor([t['done'] for t in self.memory]).to(self.device)
-        old_log_probs = torch.FloatTensor([t['log_prob'] for t in self.memory]).to(self.device)
-        old_values = torch.FloatTensor([t['value'] for t in self.memory]).to(self.device)
+        # Convert stored transitions to tensors more efficiently
+        # First convert lists to numpy arrays, then to tensors
+        states = np.array([t['state'] for t in self.memory])
+        states = torch.FloatTensor(states).to(self.device)
         
-        # Compute advantages
+        # Convert other data similarly
+        actions = np.array([t['action'] for t in self.memory])
+        actions = torch.LongTensor(actions).to(self.device)
+        
+        rewards = np.array([t['reward'] for t in self.memory])
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        
+        next_states = np.array([t['next_state'] for t in self.memory])
+        next_states = torch.FloatTensor(next_states).to(self.device)
+        
+        dones = np.array([t['done'] for t in self.memory])
+        dones = torch.FloatTensor(dones).to(self.device)
+        
+        old_log_probs = np.array([t['log_prob'] for t in self.memory])
+        old_log_probs = torch.FloatTensor(old_log_probs).to(self.device)
+        
+        old_values = np.array([t['value'] for t in self.memory])
+        old_values = torch.FloatTensor(old_values).to(self.device)
+        
+        # Rest of the method remains the same
         advantages = []
         gae = 0
         with torch.no_grad():

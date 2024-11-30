@@ -84,6 +84,9 @@ class TradingEnv(gym.Env):
         OUTPUTS: /
         """
 
+        # Move stateLength initialization to the top
+        self.stateLength = stateLength
+        
         # CASE 1: Fictive stock generation
         if(marketSymbol in fictiveStocks):
             stockGeneration = StockGenerator()
@@ -133,12 +136,18 @@ class TradingEnv(gym.Env):
         self.data['Money'] = self.data['Holdings'] + self.data['Cash']
         self.data['Returns'] = 0.
 
+        # Prepare the state data (including technical indicators)
+        self.features = ['Close', 'Low', 'High', 'Volume', 'SMA_10', 'SMA_20', 'EMA_10', 'EMA_20', 
+                         'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist', 'BB_Middle', 'BB_Upper',
+                         'BB_Lower', 'ATR_14', 'OBV']
+        
+        # Ensure that all features are present in the data
+        for feature in self.features:
+            if feature not in self.data.columns:
+                self.data[feature] = 0.0  # or handle accordingly
+
         # Set the RL variables common to every OpenAI gym environments
-        self.state = [self.data['Close'][0:stateLength].tolist(),
-                      self.data['Low'][0:stateLength].tolist(),
-                      self.data['High'][0:stateLength].tolist(),
-                      self.data['Volume'][0:stateLength].tolist(),
-                      [0]]
+        self.state = self.getState(0)
         self.reward = 0.
         self.done = 0
 
@@ -146,7 +155,6 @@ class TradingEnv(gym.Env):
         self.marketSymbol = marketSymbol
         self.startingDate = startingDate
         self.endingDate = endingDate
-        self.stateLength = stateLength
         self.t = stateLength
         self.numberOfShares = 0
         self.transactionCosts = transactionCosts
@@ -158,8 +166,38 @@ class TradingEnv(gym.Env):
 
         # Add this near the beginning of __init__
         self.action_space = 2  # 0 for short, 1 for long
-        self.observation_space = 5  # Close, Low, High, Volume, Position
+        self.observation_space = len(self.features) + 1  # Number of features plus position
 
+    def getState(self, t):
+        """
+        GOAL: Construct the state representation for the agent.
+
+        INPUTS: - t: Current time step.
+
+        OUTPUTS: - state: List containing the state information.
+        """
+        # Initialize state list
+        state = []
+        
+        # Get data for each feature
+        for feature in self.features:
+            # Get the feature data for the window
+            feature_data = self.data[feature][max(0, t - self.stateLength) : t].values
+            # Ensure the data is the correct length
+            if len(feature_data) < self.stateLength:
+                # Pad with zeros if necessary
+                padding = np.zeros(self.stateLength - len(feature_data))
+                feature_data = np.concatenate([padding, feature_data])
+            state.append(feature_data)
+        
+        # Add the current position, repeated to match the sequence length
+        position = np.full(self.stateLength, self.data['Position'][max(0, t - 1)])
+        state.append(position)
+        
+        # Convert to numpy array with proper shape
+        state = np.array(state, dtype=np.float32)  # Shape: [n_features, sequence_length]
+        
+        return state
 
     def reset(self):
         """
@@ -170,7 +208,7 @@ class TradingEnv(gym.Env):
         OUTPUTS: - state: RL state returned to the trading strategy.
         """
 
-        # Reset the trading activity dataframe
+       # Reset the trading activity dataframe
         self.data['Position'] = 0
         self.data['Action'] = 0
         self.data['Holdings'] = 0.
@@ -179,11 +217,7 @@ class TradingEnv(gym.Env):
         self.data['Returns'] = 0.
 
         # Reset the RL variables common to every OpenAI gym environments
-        self.state = [self.data['Close'][0:self.stateLength].tolist(),
-                      self.data['Low'][0:self.stateLength].tolist(),
-                      self.data['High'][0:self.stateLength].tolist(),
-                      self.data['Volume'][0:self.stateLength].tolist(),
-                      [0]]
+        self.state = self.getState(self.stateLength)
         self.reward = 0.
         self.done = 0
 
@@ -288,21 +322,17 @@ class TradingEnv(gym.Env):
             raise SystemExit("Prohibited action! Action should be either 1 (long) or 0 (short).")
 
         # Update the total amount of money owned by the agent, as well as the return generated
-        self.data['Money'][t] = self.data['Holdings'][t] + self.data['Cash'][t]
-        self.data['Returns'][t] = (self.data['Money'][t] - self.data['Money'][t-1])/self.data['Money'][t-1]
+        self.data['Money'][self.t] = self.data['Holdings'][self.t] + self.data['Cash'][self.t]
+        self.data['Returns'][self.t] = (self.data['Money'][self.t] - self.data['Money'][self.t-1])/self.data['Money'][self.t-1]
         
         # Calculate reward using the enhanced method
         self.reward = self.calculate_reward()
 
         # Transition to the next trading time step
         self.t = self.t + 1
-        self.state = [self.data['Close'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['Low'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['High'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['Volume'][self.t - self.stateLength : self.t].tolist(),
-                      [self.data['Position'][self.t - 1]]]
+        self.state = self.getState(self.t)
         if(self.t == self.data.shape[0]):
-            self.done = 1  
+            self.done = 1 
 
         # Same reasoning with the other action (exploration trick)
         otherAction = int(not bool(action))
@@ -415,11 +445,7 @@ class TradingEnv(gym.Env):
         self.t = np.clip(startingPoint, self.stateLength, len(self.data.index))
 
         # Set the RL variables common to every OpenAI gym environments
-        self.state = [self.data['Close'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['Low'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['High'][self.t - self.stateLength : self.t].tolist(),
-                      self.data['Volume'][self.t - self.stateLength : self.t].tolist(),
-                      [self.data['Position'][self.t - 1]]]
+        self.state = self.getState(self.t)
         if(self.t == self.data.shape[0]):
             self.done = 1
     
