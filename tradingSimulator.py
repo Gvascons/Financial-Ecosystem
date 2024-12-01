@@ -56,7 +56,7 @@ money = 100000
 # Variables specifying the default general training parameters
 bounds = [1, 30]
 step = 1
-numberOfEpisodes = 50
+numberOfEpisodes = 100
 
 # Dictionary listing the fictive stocks supported
 fictives = {
