@@ -15,6 +15,7 @@ import sys
 import importlib
 import pickle
 import itertools
+import datetime
 
 import numpy as np
 import pandas as pd
@@ -637,25 +638,30 @@ class TradingSimulator:
                     'LSTM_DROPOUT': lstm_dropout,
                 }
 
+                # Generate a unique run_id using trial number
+                run_id = f"TRIAL_{trial.number}_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+                # Initialize the trading strategy with suggested hyperparameters and run_id
+                strategyModule = importlib.import_module('PPO')
+                className = getattr(strategyModule, 'PPO')
+                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
+
                 # Set seeds for reproducibility
                 seed = trial.number
                 np.random.seed(seed)
                 torch.manual_seed(seed)
                 random.seed(seed)
 
-                # Initialize the trading environment for training using the correct stock symbol
+                # Initialize the trading environment
                 trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
-
-                # Initialize the trading strategy with suggested hyperparameters
-                strategyModule = importlib.import_module('PPO')
-                className = getattr(strategyModule, 'PPO')
-                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
 
                 # Train the strategy
                 trainingParameters = [numberOfEpisodes]
-                trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
-                                                    verbose=False, rendering=False,
-                                                    plotTraining=False, showPerformance=False)
+                trainingEnv = tradingStrategy.training(
+                    trainingEnv, trainingParameters=trainingParameters,
+                    verbose=False, rendering=False,
+                    plotTraining=False, showPerformance=False
+                )
 
                 # Testing phase
                 testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
@@ -699,17 +705,23 @@ class TradingSimulator:
         }
 
         # Increase the number of episodes for final training
-        final_number_of_episodes = 1  # Adjust as needed
+        final_number_of_episodes = 2  # Adjust as needed
+
+        # Generate a unique run_id for the final model
+        run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         # Train the final model with the best hyperparameters
         trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
         strategyModule = importlib.import_module('PPO')
         className = getattr(strategyModule, 'PPO')
-        tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+
+        # Pass the run_id when initializing the PPO agent
+        tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
+
         trainingParameters = [final_number_of_episodes]
         trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
-                                            verbose=True, rendering=rendering,
-                                            plotTraining=True, showPerformance=True)
+                                           verbose=True, rendering=rendering,
+                                           plotTraining=True, showPerformance=True)
 
         # Test the final model
         testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)

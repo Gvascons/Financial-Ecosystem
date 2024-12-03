@@ -138,10 +138,14 @@ class PPONetwork(nn.Module):
 
 class PPO:
     """Implementation of PPO algorithm for trading"""
-    def __init__(self, state_dim, action_dim, PPO_PARAMS=None, device='cpu', marketSymbol=None):
+    def __init__(self, state_dim, action_dim, PPO_PARAMS=None, device='cpu', marketSymbol=None, run_id=None):
         """Initialize PPO agent"""
         self.device = device
+        self.market_symbol = marketSymbol
+        self.run_id = run_id 
         
+        print(f"Initialized PPO with run_id: {self.run_id}")
+
         # If PPO_PARAMS is None, use default parameters
         if PPO_PARAMS is None:
             PPO_PARAMS = {
@@ -405,20 +409,18 @@ class PPO:
             performanceTrain = []  # Track training performance
             performanceTest = []   # Track testing performance
             
-            # Add action tracking dictionary
-            action_counts = {0: 0, 1: 0}  # Initialize counters for each action
-            
             # Create run-specific directories and ID
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.run_id = f"PPO_{trainingEnv.marketSymbol}_{timestamp}"
+            if self.run_id is None:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.run_id = f"run_PPO_{trainingEnv.marketSymbol}_{timestamp}"
             
-            # Create base directories
-            self.figures_dir = os.path.join('Figs', f'run_{self.run_id}')
+            # Create base directories using run_id
+            self.figures_dir = os.path.join('Figs', f'{self.run_id}')
             os.makedirs(self.figures_dir, exist_ok=True)
             os.makedirs('Results', exist_ok=True)
             
-            # Initialize tensorboard writer
-            self.writer = SummaryWriter(f'runs/run_{self.run_id}')
+            # Initialize TensorBoard writer with the run_id
+            self.writer = SummaryWriter(log_dir=f'runs/{self.run_id}')
             
             # Pass the directories to the training environment
             trainingEnv.figures_dir = self.figures_dir
