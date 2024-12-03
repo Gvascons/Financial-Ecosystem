@@ -19,6 +19,10 @@ import itertools
 import numpy as np
 import pandas as pd
 
+import random
+import torch
+import optuna 
+
 from tabulate import tabulate
 from tqdm import tqdm
 from matplotlib import pyplot as plt
@@ -334,12 +338,16 @@ class TradingSimulator:
 
 
     def simulateNewStrategy(self, strategyName, stockName,
-                            startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
-                            observationSpace=observationSpace, actionSpace=actionSpace, 
-                            money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            bounds=bounds, step=step, numberOfEpisodes=numberOfEpisodes,
-                            verbose=True, plotTraining=True, rendering=True, showPerformance=True,
-                            saveStrategy=False):
+                        startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
+                        observationSpace=observationSpace, actionSpace=actionSpace, 
+                        money=money, stateLength=stateLength, transactionCosts=transactionCosts,
+                        bounds=bounds, step=step, numberOfEpisodes=numberOfEpisodes,
+                        verbose=True, plotTraining=True, rendering=True, showPerformance=True,
+                        saveStrategy=False,
+                        PPO_PARAMS=None):  # Add PPO_PARAMS
+        """
+        Simulate a new trading strategy on a certain stock included in the testbench.
+        """
         """
         GOAL: Simulate a new trading strategy on a certain stock included in the
               testbench, with both learning and testing phases.
@@ -416,10 +424,14 @@ class TradingSimulator:
         trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
 
         # Instanciate the strategy classes
+         # Instantiate the strategy classes
         if ai:
             strategyModule = importlib.import_module(str(strategy))
             className = getattr(strategyModule, strategy)
-            tradingStrategy = className(observationSpace, actionSpace, marketSymbol=stock)
+            if strategy == 'PPO':
+                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+            else:
+                tradingStrategy = className(observationSpace, actionSpace, marketSymbol=stock)
         else:
             strategyModule = importlib.import_module('classicalStrategy')
             className = getattr(strategyModule, strategy)
@@ -460,10 +472,11 @@ class TradingSimulator:
 
     
     def simulateExistingStrategy(self, strategyName, stockName,
-                                 startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
-                                 observationSpace=observationSpace, actionSpace=actionSpace, 
-                                 money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                                 rendering=True, showPerformance=True):
+                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
+                             observationSpace=observationSpace, actionSpace=actionSpace, 
+                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
+                             rendering=True, showPerformance=True,
+                             PPO_PARAMS=None):  # Add PPO_PARAMS
         """
         GOAL: Simulate an already existing trading strategy on a certain
               stock of the testbench, the strategy being loaded from the
@@ -528,7 +541,7 @@ class TradingSimulator:
             raise SystemError("Please check the stock specified.")
         
 
-        # 2. LOADING PHASE    
+        # 2. LOADING PHASE
 
         # Check that the strategy to load exists in the strategy dataset
         fileName = "".join(["Strategies/", strategy, "_", stock, "_", startingDate, "_", splitingDate])
@@ -538,7 +551,10 @@ class TradingSimulator:
             if ai:
                 strategyModule = importlib.import_module(strategy)
                 className = getattr(strategyModule, strategy)
-                tradingStrategy = className(observationSpace, actionSpace)
+                if strategy == 'PPO':
+                    tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+                else:
+                    tradingStrategy = className(observationSpace, actionSpace)
                 tradingStrategy.loadModel(fileName)
             else:
                 fileHandler = open(fileName, 'rb') 
@@ -562,7 +578,149 @@ class TradingSimulator:
             self.plotEntireTrading(trainingEnv, testingEnv)
 
         return tradingStrategy, trainingEnv, testingEnv
+    
+    def optimizeHyperparameters(self, strategyName, stockName,
+                            startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
+                            observationSpace=observationSpace, actionSpace=actionSpace, 
+                            money=money, stateLength=stateLength, transactionCosts=transactionCosts,
+                            numberOfEpisodes=10, n_trials=50, rendering=False):
+        """
+        Optimize hyperparameters for the specified strategy and stock.
+        """
+        if strategyName != 'PPO':
+            raise NotImplementedError("Hyperparameter optimization is currently implemented only for PPO.")
+        
+        # Retrieve the trading stock information
+        if(stockName in fictives):
+            stock = fictives[stockName]
+        elif(stockName in indices):
+            stock = indices[stockName]
+        elif(stockName in companies):
+            stock = companies[stockName]
+        else:
+            print("The stock specified is not valid, only the following stocks are supported:")
+            for s in fictives:
+                print("".join(['- ', s]))
+            for s in indices:
+                print("".join(['- ', s]))
+            for s in companies:
+                print("".join(['- ', s]))
+            raise SystemError("Please check the stock specified.")
+        
+        # Define the objective function for Optuna
+        def objective(trial):
+            try:
+                # Suggest number of LSTM layers
+                lstm_layers = trial.suggest_int('LSTM_LAYERS', 1, 3)
 
+                # Suggest dropout only if num_layers > 1
+                if lstm_layers > 1:
+                    lstm_dropout = trial.suggest_float('LSTM_DROPOUT', 0.0, 0.5)
+                else:
+                    lstm_dropout = 0.0  # Set dropout to zero when num_layers is 1
+
+                # Suggest other hyperparameters
+                PPO_PARAMS = {
+                    'CLIP_EPSILON': trial.suggest_float('CLIP_EPSILON', 0.1, 0.3),
+                    'VALUE_LOSS_COEF': trial.suggest_float('VALUE_LOSS_COEF', 0.1, 1.0),
+                    'ENTROPY_COEF': trial.suggest_float('ENTROPY_COEF', 0.0, 0.05),
+                    'PPO_EPOCHS': trial.suggest_int('PPO_EPOCHS', 1, 10),
+                    'BATCH_SIZE': trial.suggest_int('BATCH_SIZE', 32, 256, log=True),
+                    'GAMMA': trial.suggest_float('GAMMA', 0.9, 0.9999),
+                    'GAE_LAMBDA': trial.suggest_float('GAE_LAMBDA', 0.8, 1.0),
+                    'LEARNING_RATE': trial.suggest_float('LEARNING_RATE', 1e-5, 1e-3, log=True),
+                    'MAX_GRAD_NORM': trial.suggest_float('MAX_GRAD_NORM', 0.1, 1.0),
+                    'HIDDEN_SIZE': trial.suggest_categorical('HIDDEN_SIZE', [64, 128, 256, 512]),
+                    'MEMORY_SIZE': 10000,
+                    'LSTM_HIDDEN_SIZE': trial.suggest_categorical('LSTM_HIDDEN_SIZE', [64, 128, 256]),
+                    'LSTM_LAYERS': lstm_layers,
+                    'LSTM_DROPOUT': lstm_dropout,
+                }
+
+                # Set seeds for reproducibility
+                seed = trial.number
+                np.random.seed(seed)
+                torch.manual_seed(seed)
+                random.seed(seed)
+
+                # Initialize the trading environment for training using the correct stock symbol
+                trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+
+                # Initialize the trading strategy with suggested hyperparameters
+                strategyModule = importlib.import_module('PPO')
+                className = getattr(strategyModule, 'PPO')
+                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+
+                # Train the strategy
+                trainingParameters = [numberOfEpisodes]
+                trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
+                                                    verbose=False, rendering=False,
+                                                    plotTraining=False, showPerformance=False)
+
+                # Testing phase
+                testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
+                testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=False, showPerformance=False)
+
+                # Evaluate performance
+                analyser = PerformanceEstimator(testingEnv.data)
+                performance = analyser.computeSharpeRatio()
+
+                # Optuna minimizes the objective, so return negative Sharpe Ratio
+                return -performance
+        
+            except Exception as e:
+                print(f"Trial {trial.number} failed with exception: {e}")
+                return float('inf')  # Return a high value to indicate failure
+            
+        # Create the Optuna study and optimize
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials)
+
+        # Get the best hyperparameters
+        best_params = study.best_params
+        print("Best hyperparameters:", best_params)
+
+        # Use the best hyperparameters to train the final model
+        PPO_PARAMS = {
+            'CLIP_EPSILON': best_params['CLIP_EPSILON'],
+            'VALUE_LOSS_COEF': best_params['VALUE_LOSS_COEF'],
+            'ENTROPY_COEF': best_params['ENTROPY_COEF'],
+            'PPO_EPOCHS': best_params['PPO_EPOCHS'],
+            'BATCH_SIZE': best_params['BATCH_SIZE'],
+            'GAMMA': best_params['GAMMA'],
+            'GAE_LAMBDA': best_params['GAE_LAMBDA'],
+            'LEARNING_RATE': best_params['LEARNING_RATE'],
+            'MAX_GRAD_NORM': best_params['MAX_GRAD_NORM'],
+            'HIDDEN_SIZE': best_params['HIDDEN_SIZE'],
+            'MEMORY_SIZE': 10000,
+            'LSTM_HIDDEN_SIZE': best_params['LSTM_HIDDEN_SIZE'],
+            'LSTM_LAYERS': best_params['LSTM_LAYERS'],
+            'LSTM_DROPOUT': best_params.get('LSTM_DROPOUT', 0.0),  # Use get() with default 0.0
+        }
+
+        # Increase the number of episodes for final training
+        final_number_of_episodes = 1  # Adjust as needed
+
+        # Train the final model with the best hyperparameters
+        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+        strategyModule = importlib.import_module('PPO')
+        className = getattr(strategyModule, 'PPO')
+        tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+        trainingParameters = [final_number_of_episodes]
+        trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
+                                            verbose=True, rendering=rendering,
+                                            plotTraining=True, showPerformance=True)
+
+        # Test the final model
+        testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
+        testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=rendering, showPerformance=True)
+
+        # Show the entire unified rendering of the training and testing phases
+        if rendering:
+            self.plotEntireTrading(trainingEnv, testingEnv)
+
+        return tradingStrategy, trainingEnv, testingEnv
+    
 
     def evaluateStrategy(self, strategyName,
                          startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,

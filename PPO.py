@@ -26,34 +26,16 @@ import traceback
 if not os.path.exists('Figs'):
     os.makedirs('Figs')
 
-# PPO hyperparameters
-PPO_PARAMS = {
-    'CLIP_EPSILON': 0.2,
-    'VALUE_LOSS_COEF': 0.5,
-    'ENTROPY_COEF': 0.02,
-    'PPO_EPOCHS': 4,
-    'BATCH_SIZE': 128,
-    'GAMMA': 0.99,
-    'GAE_LAMBDA': 0.95,
-    'LEARNING_RATE': 1e-4,
-    'MAX_GRAD_NORM': 0.5,
-    'HIDDEN_SIZE': 256,
-    'MEMORY_SIZE': 10000,
-    'LSTM_HIDDEN_SIZE': 128,
-    'LSTM_LAYERS': 2,
-    'LSTM_DROPOUT': 0.2,
-}
-
 class PPONetwork(nn.Module):
-    def __init__(self, input_size, num_actions):
+    def __init__(self, input_size, num_actions, PPO_PARAMS):
         super().__init__()
+        self.PPO_PARAMS = PPO_PARAMS  # Store PPO_PARAMS as an instance variable
         
-        # Calculate actual number of features (divide total input size by sequence length)
-        self.num_features = 18  # Total number of features (17 market features + 1 position)
-        self.sequence_length = 30  # Length of each sequence
-        self.feature_dim = PPO_PARAMS['HIDDEN_SIZE']
-        self.lstm_hidden_size = PPO_PARAMS['LSTM_HIDDEN_SIZE']
-        self.lstm_layers = PPO_PARAMS['LSTM_LAYERS']
+        self.num_features = 18  # Total number of features
+        self.sequence_length = 30
+        self.feature_dim = self.PPO_PARAMS['HIDDEN_SIZE']
+        self.lstm_hidden_size = self.PPO_PARAMS['LSTM_HIDDEN_SIZE']
+        self.lstm_layers = self.PPO_PARAMS['LSTM_LAYERS']
         
         # LSTM expects input shape: [batch, sequence_length, num_features]
         self.lstm = nn.LSTM(
@@ -61,7 +43,7 @@ class PPONetwork(nn.Module):
             hidden_size=self.lstm_hidden_size,
             num_layers=self.lstm_layers,
             batch_first=True,
-            dropout=PPO_PARAMS['LSTM_DROPOUT']
+            dropout=self.PPO_PARAMS['LSTM_DROPOUT']
         )
         
         self.lstm_norm = nn.LayerNorm(self.lstm_hidden_size)
@@ -156,22 +138,41 @@ class PPONetwork(nn.Module):
 
 class PPO:
     """Implementation of PPO algorithm for trading"""
-    def __init__(self, state_dim, action_dim, device='cpu', marketSymbol=None):
+    def __init__(self, state_dim, action_dim, PPO_PARAMS=None, device='cpu', marketSymbol=None):
         """Initialize PPO agent"""
         self.device = device
         
-        # Calculate input size based on state structure
+        # If PPO_PARAMS is None, use default parameters
+        if PPO_PARAMS is None:
+            PPO_PARAMS = {
+                'CLIP_EPSILON': 0.2,
+                'VALUE_LOSS_COEF': 0.5,
+                'ENTROPY_COEF': 0.02,
+                'PPO_EPOCHS': 4,
+                'BATCH_SIZE': 128,
+                'GAMMA': 0.99,
+                'GAE_LAMBDA': 0.95,
+                'LEARNING_RATE': 1e-4,
+                'MAX_GRAD_NORM': 0.5,
+                'HIDDEN_SIZE': 256,
+                'MEMORY_SIZE': 10000,
+                'LSTM_HIDDEN_SIZE': 128,
+                'LSTM_LAYERS': 2,
+                'LSTM_DROPOUT': 0.2,
+            }
+        self.PPO_PARAMS = PPO_PARAMS
+        
+        # Initialize network with correct input size
         self.input_size = state_dim
         self.num_actions = action_dim
         
         print(f"Initializing PPO with input size: {self.input_size}, action size: {self.num_actions}")
         
-        # Initialize network with correct input size
-        self.network = PPONetwork(self.input_size, self.num_actions).to(self.device)
-        self.optimizer = optim.Adam(self.network.parameters(), lr=PPO_PARAMS['LEARNING_RATE'])
+        self.network = PPONetwork(self.input_size, self.num_actions, self.PPO_PARAMS).to(self.device)
+        self.optimizer = optim.Adam(self.network.parameters(), lr=self.PPO_PARAMS['LEARNING_RATE'])
         
         # Initialize memory
-        self.memory = deque(maxlen=PPO_PARAMS['MEMORY_SIZE'])
+        self.memory = deque(maxlen=self.PPO_PARAMS['MEMORY_SIZE'])
         
         # Initialize training step counter
         self.training_step = 0
@@ -300,7 +301,7 @@ class PPO:
 
     def update_policy(self):
         """Update policy using PPO"""
-        if len(self.memory) < PPO_PARAMS['BATCH_SIZE']:
+        if len(self.memory) < self.PPO_PARAMS['BATCH_SIZE']:
             return
         
         # Convert stored transitions to tensors more efficiently
@@ -333,20 +334,20 @@ class PPO:
         with torch.no_grad():
             for i in reversed(range(len(rewards))):
                 next_value = 0 if i == len(rewards) - 1 else old_values[i + 1]
-                delta = rewards[i] + PPO_PARAMS['GAMMA'] * next_value * (1 - dones[i]) - old_values[i]
-                gae = delta + PPO_PARAMS['GAMMA'] * PPO_PARAMS['GAE_LAMBDA'] * (1 - dones[i]) * gae
+                delta = rewards[i] + self.PPO_PARAMS['GAMMA'] * next_value * (1 - dones[i]) - old_values[i]
+                gae = delta + self.PPO_PARAMS['GAMMA'] * self.PPO_PARAMS['GAE_LAMBDA'] * (1 - dones[i]) * gae
                 advantages.insert(0, gae)
         
         advantages = torch.tensor(advantages, device=self.device, dtype=torch.float32)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # PPO update
-        for _ in range(PPO_PARAMS['PPO_EPOCHS']):
+        for _ in range(self.PPO_PARAMS['PPO_EPOCHS']):
             # Sample mini-batches
             indices = np.random.permutation(len(self.memory))
             
-            for start in range(0, len(self.memory), PPO_PARAMS['BATCH_SIZE']):
-                end = start + PPO_PARAMS['BATCH_SIZE']
+            for start in range(0, len(self.memory), self.PPO_PARAMS['BATCH_SIZE']):
+                end = start + self.PPO_PARAMS['BATCH_SIZE']
                 batch_indices = indices[start:end]
                 
                 if len(batch_indices) < 3:
@@ -369,19 +370,19 @@ class PPO:
                 # Calculate losses separately
                 ratios = torch.exp(curr_log_probs - batch_old_log_probs)
                 surr1 = ratios * batch_advantages
-                surr2 = torch.clamp(ratios, 1-PPO_PARAMS['CLIP_EPSILON'], 1+PPO_PARAMS['CLIP_EPSILON']) * batch_advantages
+                surr2 = torch.clamp(ratios, 1-self.PPO_PARAMS['CLIP_EPSILON'], 1+self.PPO_PARAMS['CLIP_EPSILON']) * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = F.mse_loss(values.squeeze(), rewards[batch_indices])
                 
                 # Combine losses
                 loss = (policy_loss + 
-                       PPO_PARAMS['VALUE_LOSS_COEF'] * value_loss - 
-                       PPO_PARAMS['ENTROPY_COEF'] * entropy)
+                       self.PPO_PARAMS['VALUE_LOSS_COEF'] * value_loss - 
+                       self.PPO_PARAMS['ENTROPY_COEF'] * entropy)
                 
                 # Update network
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.network.parameters(), PPO_PARAMS['MAX_GRAD_NORM'])
+                nn.utils.clip_grad_norm_(self.network.parameters(), self.PPO_PARAMS['MAX_GRAD_NORM'])
                 self.optimizer.step()
                 
                 # Log metrics
@@ -474,7 +475,7 @@ class PPO:
                         self.store_transition(state, action, reward, nextState_processed, done, log_prob, value)
                         
                         # Execute the PPO learning procedure
-                        if len(self.memory) >= PPO_PARAMS['BATCH_SIZE']:
+                        if len(self.memory) >= self.PPO_PARAMS['BATCH_SIZE']:
                             self.update_policy()
                         
                         # Update the RL state
