@@ -64,30 +64,12 @@ class TradingEnv(gym.Env):
     """
 
     def __init__(self, marketSymbol, startingDate, endingDate, money, stateLength=30,
-             transactionCosts=0, startingPoint=0, min_holding_period=10, max_holding_period=100):
+             transactionCosts=0, startingPoint=0):
         """
-        GOAL: Object constructor initializing the trading environment by setting up
-              the trading activity dataframe as well as other important variables.
-
-        INPUTS:
-            - marketSymbol: Stock market symbol.
-            - startingDate: Beginning of the trading horizon.
-            - endingDate: Ending of the trading horizon.
-            - money: Initial amount of money at the disposal of the agent.
-            - stateLength: Number of trading time steps included in the RL state.
-            - transactionCosts: Transaction costs associated with the trading
-                                activity (e.g. 0.01 is 1% of loss).
-            - startingPoint: Optional starting point (iteration) of the trading activity.
-
-        OUTPUTS: /
+        Initialize the trading environment.
         """
 
-        # Move stateLength initialization to the top
         self.stateLength = stateLength
-        # Initialize holding period constraints
-        self.min_holding_period = min_holding_period
-        self.max_holding_period = max_holding_period
-        self.holding_period = 0  # Days the current position has been held
 
         # CASE 1: Fictive stock generation
         if(marketSymbol in fictiveStocks):
@@ -139,14 +121,17 @@ class TradingEnv(gym.Env):
         self.data['Returns'] = 0.
 
         # Prepare the state data (including technical indicators)
-        self.features = ['Close', 'Low', 'High', 'Volume', 'SMA_10', 'SMA_20', 'EMA_10', 'EMA_20',
-                         'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist', 'BB_Middle', 'BB_Upper',
-                         'BB_Lower', 'ATR_14', 'OBV']
+        self.features = ['Open', 'High', 'Low', 'Close', 'Volume',  # Basic features
+                         'SMA_10', 'SMA_20', 'EMA_10', 'EMA_20',    # Moving averages
+                         'RSI_14',                                   # RSI
+                         'MACD', 'MACD_Signal', 'MACD_Hist',        # MACD
+                         'BB_Middle', 'BB_Upper', 'BB_Lower',       # Bollinger Bands
+                         'ATR_14', 'OBV']                           # Volatility and volume-based features
 
         # Ensure that all features are present in the data
         for feature in self.features:
             if feature not in self.data.columns:
-                self.data[feature] = 0.0  # or handle accordingly
+                self.data[feature] = 0.0
 
         # Set the RL variables common to every OpenAI gym environments
         self.state = self.getState(0)
@@ -160,26 +145,18 @@ class TradingEnv(gym.Env):
         self.t = stateLength
         self.numberOfShares = 0
         self.transactionCosts = transactionCosts
-        self.epsilon = 0.1
-
-        # Initialize holding period
-        self.holding_period = 0  # Days the current position has been held
 
         # If required, set a custom starting point for the trading activity
         if startingPoint:
             self.setStartingPoint(startingPoint)
 
-        # Add this near the beginning of __init__
-        self.action_space = 2  # 0 for short, 1 for long
-        self.observation_space = len(self.features) + 1  # Number of features plus position
+        # Define action space: 0 - Short, 1 - Hold, 2 - Long
+        self.action_space = gym.spaces.Discrete(3)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(stateLength, len(self.features) + 1), dtype=np.float32)
 
     def getState(self, t):
         """
-        GOAL: Construct the state representation for the agent.
-
-        INPUTS: - t: Current time step.
-
-        OUTPUTS: - state: List containing the state information.
+        Construct the state representation for the agent.
         """
         # Initialize state list
         state = []
@@ -195,24 +172,20 @@ class TradingEnv(gym.Env):
                 feature_data = np.concatenate([padding, feature_data])
             state.append(feature_data)
 
-        # Add the current position, repeated to match the sequence length
+        # Add the current position
         position = np.full(self.stateLength, self.data['Position'][max(0, t - 1)])
         state.append(position)
 
         # Convert to numpy array with proper shape
         state = np.array(state, dtype=np.float32)  # Shape: [n_features, sequence_length]
+        state = np.swapaxes(state, 0, 1)  # Shape: [sequence_length, n_features]
 
         return state
 
     def reset(self):
         """
-        GOAL: Perform a soft reset of the trading environment.
-
-        INPUTS: /
-
-        OUTPUTS: - state: RL state returned to the trading strategy.
+        Perform a soft reset of the trading environment.
         """
-
         # Reset the trading activity dataframe
         self.data['Position'] = 0
         self.data['Action'] = 0
@@ -221,15 +194,14 @@ class TradingEnv(gym.Env):
         self.data['Money'] = self.data['Holdings'] + self.data['Cash']
         self.data['Returns'] = 0.
 
-        # Reset the RL variables common to every OpenAI gym environments
+        # Reset the RL variables
         self.state = self.getState(self.stateLength)
         self.reward = 0.
         self.done = 0
 
-        # Reset additional variables related to the trading activity
+        # Reset additional variables
         self.t = self.stateLength
         self.numberOfShares = 0
-        self.holding_period = 0  # Reset holding period
 
         return self.state
 
@@ -255,130 +227,76 @@ class TradingEnv(gym.Env):
 
     def step(self, action):
         """
-        GOAL: Transition to the next trading time step based on the
-              trading position decision made (either long or short).
-
-        INPUTS: - action: Trading decision (1 = long, 0 = short).
-
-        OUTPUTS: - state: RL state to be returned to the RL agent.
-                 - reward: RL reward to be returned to the RL agent.
-                 - done: RL episode termination signal (boolean).
-                 - info: Additional information returned to the RL agent.
+        Transition to the next trading time step based on the trading action.
         """
-
-        # Setting of some local variables
         t = self.t
         numberOfShares = self.numberOfShares
-        self.customReward = False  # Reset custom reward flag
 
         current_position = self.data['Position'][t - 1]  # Previous position
 
-        # Check if the agent is trying to change position
-        trying_to_change = (action != (1 if current_position == 1 else 0))
+        # Action mapping: 0 - Short, 1 - Hold, 2 - Long
+        # Map actions to positions: -1, 0, 1
+        action_position = action - 1
+        self.data['Position'][t] = action_position
 
-        # Enforce minimum holding period
-        if self.holding_period < self.min_holding_period:
-            if trying_to_change:
-                # Prevent position change
-                action = 1 if current_position == 1 else 0
-        # Enforce maximum holding period
-        elif self.holding_period >= self.max_holding_period:
-            if not trying_to_change:
-                # Force position change
-                action = 0 if current_position == 1 else 1
-                # Reset holding period after forced change
-                self.holding_period = 0
-
-        # Update holding period
-        if action == (1 if current_position == 1 else 0):
-            self.holding_period += 1
-        else:
-            self.holding_period = 1  # Reset holding period after position change
-
-        # Proceed with the original step logic
-
-        # CASE 1: LONG POSITION
-        if(action == 1):
-            self.data['Position'][t] = 1
-            # Case a: Long -> Long
-            if(current_position == 1):
-                self.data['Cash'][t] = self.data['Cash'][t - 1]
-                self.data['Holdings'][t] = self.numberOfShares * self.data['Close'][t]
-            # Case b: No position -> Long
-            elif(current_position == 0):
-                self.numberOfShares = math.floor(self.data['Cash'][t - 1]/(self.data['Close'][t] * (1 + self.transactionCosts)))
-                self.data['Cash'][t] = self.data['Cash'][t - 1] - self.numberOfShares * self.data['Close'][t] * (1 + self.transactionCosts)
-                self.data['Holdings'][t] = self.numberOfShares * self.data['Close'][t]
-                self.data['Action'][t] = 1
-            # Case c: Short -> Long
-            else:
-                self.data['Cash'][t] = self.data['Cash'][t - 1] - self.numberOfShares * self.data['Close'][t] * (1 + self.transactionCosts)
-                self.numberOfShares = math.floor(self.data['Cash'][t]/(self.data['Close'][t] * (1 + self.transactionCosts)))
-                self.data['Cash'][t] = self.data['Cash'][t] - self.numberOfShares * self.data['Close'][t] * (1 + self.transactionCosts)
-                self.data['Holdings'][t] = self.numberOfShares * self.data['Close'][t]
-                self.data['Action'][t] = 1
-
-        # CASE 2: SHORT POSITION
-        elif(action == 0):
-            self.data['Position'][t] = -1
-            # Case a: Short -> Short
-            if(current_position == -1):
-                lowerBound = self.computeLowerBound(self.data['Cash'][t - 1], -numberOfShares, self.data['Close'][t-1])
-                if lowerBound <= 0:
-                    self.data['Cash'][t] = self.data['Cash'][t - 1]
-                    self.data['Holdings'][t] =  - self.numberOfShares * self.data['Close'][t]
+        # If position changes, execute trades
+        if action_position != current_position:
+            # Close existing position
+            if current_position != 0:
+                # Sell shares if long, buy to cover if short
+                trade_shares = numberOfShares
+                trade_price = self.data['Close'][t]
+                if current_position == 1:
+                    self.data['Cash'][t] = self.data['Cash'][t - 1] + trade_shares * trade_price * (1 - self.transactionCosts)
                 else:
-                    numberOfSharesToBuy = min(math.floor(lowerBound), self.numberOfShares)
-                    self.numberOfShares -= numberOfSharesToBuy
-                    self.data['Cash'][t] = self.data['Cash'][t - 1] - numberOfSharesToBuy * self.data['Close'][t] * (1 + self.transactionCosts)
-                    self.data['Holdings'][t] =  - self.numberOfShares * self.data['Close'][t]
-                    self.customReward = True
-            # Case b: No position -> Short
-            elif(current_position == 0):
-                self.numberOfShares = math.floor(self.data['Cash'][t - 1]/(self.data['Close'][t] * (1 + self.transactionCosts)))
-                self.data['Cash'][t] = self.data['Cash'][t - 1] + self.numberOfShares * self.data['Close'][t] * (1 - self.transactionCosts)
-                self.data['Holdings'][t] = - self.numberOfShares * self.data['Close'][t]
-                self.data['Action'][t] = -1
-            # Case c: Long -> Short
+                    self.data['Cash'][t] = self.data['Cash'][t - 1] - trade_shares * trade_price * (1 + self.transactionCosts)
+                numberOfShares = 0
             else:
-                self.data['Cash'][t] = self.data['Cash'][t - 1] + self.numberOfShares * self.data['Close'][t] * (1 - self.transactionCosts)
-                self.numberOfShares = math.floor(self.data['Cash'][t]/(self.data['Close'][t] * (1 + self.transactionCosts)))
-                self.data['Cash'][t] = self.data['Cash'][t] + self.numberOfShares * self.data['Close'][t] * (1 - self.transactionCosts)
-                self.data['Holdings'][t] = - self.numberOfShares * self.data['Close'][t]
-                self.data['Action'][t] = -1
+                self.data['Cash'][t] = self.data['Cash'][t - 1]
 
-        # CASE 3: PROHIBITED ACTION
+            # Open new position
+            if action_position != 0:
+                trade_price = self.data['Close'][t]
+                max_shares = self.data['Cash'][t] / (trade_price * (1 + self.transactionCosts))
+                numberOfShares = math.floor(max_shares)
+                if action_position == 1:
+                    self.data['Cash'][t] = self.data['Cash'][t] - numberOfShares * trade_price * (1 + self.transactionCosts)
+                else:
+                    self.data['Cash'][t] = self.data['Cash'][t] + numberOfShares * trade_price * (1 - self.transactionCosts)
+            self.data['Action'][t] = action_position
         else:
-            raise SystemExit("Prohibited action! Action should be either 1 (long) or 0 (short).")
+            self.data['Cash'][t] = self.data['Cash'][t - 1]
 
-        # Update the total amount of money owned by the agent, as well as the return generated
-        self.data['Money'][self.t] = self.data['Holdings'][self.t] + self.data['Cash'][self.t]
-        self.data['Returns'][self.t] = (self.data['Money'][self.t] - self.data['Money'][self.t-1])/self.data['Money'][self.t-1]
+        # Update holdings
+        if action_position == 1:
+            self.data['Holdings'][t] = numberOfShares * self.data['Close'][t]
+        elif action_position == -1:
+            self.data['Holdings'][t] = -numberOfShares * self.data['Close'][t]
+        else:
+            self.data['Holdings'][t] = 0
 
-        # Calculate reward using the enhanced method
-        self.reward = self.calculate_reward()
+        self.numberOfShares = numberOfShares
+
+        # Update total money and returns
+        self.data['Money'][t] = self.data['Holdings'][t] + self.data['Cash'][t]
+        self.data['Returns'][t] = (self.data['Money'][t] - self.data['Money'][t - 1]) / self.data['Money'][t - 1]
+
+        # Calculate reward
+        self.reward = self.data['Returns'][t]
 
         # Transition to the next trading time step
         self.t = self.t + 1
         if(self.t == self.data.shape[0]):
-            self.done = 1
+            self.done = True
             self.state = self.getState(self.t - 1)  # Last state
         else:
             self.state = self.getState(self.t)
 
-        # Return the trading environment feedback to the RL trading agent
         return self.state, self.reward, self.done, {}
 
     def render(self):
         """
-        GOAL: Illustrate graphically the trading activity, by plotting
-              both the evolution of the stock market price and the
-              evolution of the trading capital. All the trading decisions
-              (long and short positions) are displayed as well.
-
-        INPUTS: /
-
-        OUTPUTS: /
+        Illustrate graphically the trading activity.
         """
         # Set the Matplotlib figure and subplots
         fig = plt.figure(figsize=(10, 8))
@@ -387,20 +305,20 @@ class TradingEnv(gym.Env):
 
         # Plot the first graph -> Evolution of the stock market price
         self.data['Close'].plot(ax=ax1, color='blue', lw=2)
-        ax1.plot(self.data.loc[self.data['Action'] == 1.0].index,
-                 self.data['Close'][self.data['Action'] == 1.0],
+        ax1.plot(self.data.loc[self.data['Action'] == 1].index,
+                 self.data['Close'][self.data['Action'] == 1],
                  '^', markersize=5, color='green')
-        ax1.plot(self.data.loc[self.data['Action'] == -1.0].index,
-                 self.data['Close'][self.data['Action'] == -1.0],
+        ax1.plot(self.data.loc[self.data['Action'] == -1].index,
+                 self.data['Close'][self.data['Action'] == -1],
                  'v', markersize=5, color='red')
 
         # Plot the second graph -> Evolution of the trading capital
         self.data['Money'].plot(ax=ax2, color='blue', lw=2)
-        ax2.plot(self.data.loc[self.data['Action'] == 1.0].index,
-                 self.data['Money'][self.data['Action'] == 1.0],
+        ax2.plot(self.data.loc[self.data['Action'] == 1].index,
+                 self.data['Money'][self.data['Action'] == 1],
                  '^', markersize=5, color='green')
-        ax2.plot(self.data.loc[self.data['Action'] == -1.0].index,
-                 self.data['Money'][self.data['Action'] == -1.0],
+        ax2.plot(self.data.loc[self.data['Action'] == -1].index,
+                 self.data['Money'][self.data['Action'] == -1],
                  'v', markersize=5, color='red')
 
         # Generation of the two legends and plotting
@@ -412,18 +330,10 @@ class TradingEnv(gym.Env):
 
     def setStartingPoint(self, startingPoint):
         """
-        GOAL: Setting an arbitrary starting point regarding the trading activity.
-              This technique is used for better generalization of the RL agent.
-
-        INPUTS: - startingPoint: Optional starting point (iteration) of the trading activity.
-
-        OUTPUTS: /
+        Setting an arbitrary starting point regarding the trading activity.
         """
-
-        # Setting a custom starting point
         self.t = np.clip(startingPoint, self.stateLength, len(self.data.index))
 
-        # Set the RL variables common to every OpenAI gym environments
         self.state = self.getState(self.t)
         if(self.t == self.data.shape[0]):
             self.done = 1

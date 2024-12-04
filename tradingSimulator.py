@@ -49,7 +49,7 @@ splitingDate = '2018-1-1'
 # Variables defining the default observation and state spaces
 stateLength = 30
 observationSpace = 1 + (stateLength-1)*4
-actionSpace = 2
+actionSpace = 3
 
 # Variables setting up the default transaction costs
 percentageCosts = [0, 0.1, 0.2]
@@ -345,7 +345,7 @@ class TradingSimulator:
                         bounds=bounds, step=step, numberOfEpisodes=numberOfEpisodes,
                         verbose=True, plotTraining=True, rendering=True, showPerformance=True,
                         saveStrategy=False,
-                        PPO_PARAMS=None):  # Add PPO_PARAMS
+                        PPO_PARAMS=None):
         """
         Simulate a new trading strategy on a certain stock included in the testbench.
         """
@@ -422,17 +422,20 @@ class TradingSimulator:
         # 2. TRAINING PHASE
 
         # Initialize the trading environment associated with the training phase
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=10, max_holding_period=100)
+        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
 
-        # Instanciate the strategy classes
-         # Instantiate the strategy classes
+        # Get the actual number of features per timestep
+        state_dim = len(trainingEnv.features) + 1  # +1 for Position
+        action_dim = actionSpace
+
+        # Instantiate the strategy classes
         if ai:
             strategyModule = importlib.import_module(str(strategy))
             className = getattr(strategyModule, strategy)
             if strategy == 'PPO':
-                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock)
+                tradingStrategy = className(state_dim, action_dim, PPO_PARAMS, marketSymbol=stock)
             else:
-                tradingStrategy = className(observationSpace, actionSpace, marketSymbol=stock)
+                tradingStrategy = className(state_dim, action_dim, marketSymbol=stock)
         else:
             strategyModule = importlib.import_module('classicalStrategy')
             className = getattr(strategyModule, strategy)
@@ -584,7 +587,8 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=20, n_trials=50, rendering=False):
+                            numberOfEpisodes=50, final_train_episodes=100,  # Add final_train_episodes parameter
+                            n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -608,75 +612,89 @@ class TradingSimulator:
                 print("".join(['- ', s]))
             raise SystemError("Please check the stock specified.")
         
-        # Define the objective function for Optuna
-        def objective(trial):
-            try:
-                # Suggest number of LSTM layers
-                lstm_layers = trial.suggest_int('LSTM_LAYERS', 1, 3)
-
-                # Suggest dropout only if num_layers > 1
-                if lstm_layers > 1:
-                    lstm_dropout = trial.suggest_float('LSTM_DROPOUT', 0.0, 0.5)
-                else:
-                    lstm_dropout = 0.0  # Set dropout to zero when num_layers is 1
-
-                # Suggest other hyperparameters
-                PPO_PARAMS = {
-                    'CLIP_EPSILON': trial.suggest_float('CLIP_EPSILON', 0.1, 0.3),
-                    'VALUE_LOSS_COEF': trial.suggest_float('VALUE_LOSS_COEF', 0.1, 1.0),
-                    'ENTROPY_COEF': trial.suggest_float('ENTROPY_COEF', 0.0, 0.05),
-                    'PPO_EPOCHS': trial.suggest_int('PPO_EPOCHS', 1, 10),
-                    'BATCH_SIZE': trial.suggest_int('BATCH_SIZE', 32, 256, log=True),
-                    'GAMMA': trial.suggest_float('GAMMA', 0.9, 0.9999),
-                    'GAE_LAMBDA': trial.suggest_float('GAE_LAMBDA', 0.8, 1.0),
-                    'LEARNING_RATE': trial.suggest_float('LEARNING_RATE', 1e-5, 1e-3, log=True),
-                    'MAX_GRAD_NORM': trial.suggest_float('MAX_GRAD_NORM', 0.1, 1.0),
-                    'HIDDEN_SIZE': trial.suggest_categorical('HIDDEN_SIZE', [64, 128, 256, 512]),
-                    'MEMORY_SIZE': 10000,
-                    'LSTM_HIDDEN_SIZE': trial.suggest_categorical('LSTM_HIDDEN_SIZE', [64, 128, 256]),
-                    'LSTM_LAYERS': lstm_layers,
-                    'LSTM_DROPOUT': lstm_dropout,
-                }
-
-                # Generate a unique run_id using trial number
-                run_id = f"TRIAL_{trial.number}_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-                # Initialize the trading strategy with suggested hyperparameters and run_id
-                strategyModule = importlib.import_module('PPO')
-                className = getattr(strategyModule, 'PPO')
-                tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
-
-                # Set seeds for reproducibility
-                seed = trial.number
-                np.random.seed(seed)
-                torch.manual_seed(seed)
-                random.seed(seed)
-
-                # Initialize the trading environment
-                trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
-
-                # Train the strategy
-                trainingParameters = [numberOfEpisodes]
-                trainingEnv = tradingStrategy.training(
-                    trainingEnv, trainingParameters=trainingParameters,
-                    verbose=False, rendering=False,
-                    plotTraining=False, showPerformance=False
-                )
-
-                # Testing phase
-                testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
-                testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=False, showPerformance=False)
-
-                # Evaluate performance
-                analyser = PerformanceEstimator(testingEnv.data)
-                performance = analyser.computeSharpeRatio()
-
-                # Optuna minimizes the objective, so return negative Sharpe Ratio
-                return -performance
+        # Initialize training environment once to get feature dimensions
+        initial_env = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+        state_dim = len(initial_env.features) + 1  # +1 for Position
         
-            except Exception as e:
-                print(f"Trial {trial.number} failed with exception: {e}")
-                return float('inf')  # Return a high value to indicate failure
+        with tqdm(total=n_trials, desc="Hyperparameter Trials", position=0) as pbar:
+            # Define the objective function for Optuna
+            def objective(trial):
+                try:
+                    # Suggest number of LSTM layers
+                    lstm_layers = trial.suggest_int('LSTM_LAYERS', 1, 3)
+
+                    # Suggest dropout only if num_layers > 1
+                    if lstm_layers > 1:
+                        lstm_dropout = trial.suggest_float('LSTM_DROPOUT', 0.0, 0.5)
+                    else:
+                        lstm_dropout = 0.0  # Set dropout to zero when num_layers is 1
+
+                    # Suggest other hyperparameters
+                    PPO_PARAMS = {
+                        'CLIP_EPSILON': trial.suggest_float('CLIP_EPSILON', 0.1, 0.3),
+                        'VALUE_LOSS_COEF': trial.suggest_float('VALUE_LOSS_COEF', 0.1, 1.0),
+                        'ENTROPY_COEF': trial.suggest_float('ENTROPY_COEF', 0.0, 0.05),
+                        'PPO_EPOCHS': trial.suggest_int('PPO_EPOCHS', 1, 10),
+                        'BATCH_SIZE': trial.suggest_int('BATCH_SIZE', 32, 256, log=True),
+                        'GAMMA': trial.suggest_float('GAMMA', 0.9, 0.9999),
+                        'GAE_LAMBDA': trial.suggest_float('GAE_LAMBDA', 0.8, 1.0),
+                        'LEARNING_RATE': trial.suggest_float('LEARNING_RATE', 1e-5, 1e-3, log=True),
+                        'MAX_GRAD_NORM': trial.suggest_float('MAX_GRAD_NORM', 0.1, 1.0),
+                        'HIDDEN_SIZE': trial.suggest_categorical('HIDDEN_SIZE', [64, 128, 256, 512]),
+                        'MEMORY_SIZE': 10000,
+                        'LSTM_HIDDEN_SIZE': trial.suggest_categorical('LSTM_HIDDEN_SIZE', [64, 128, 256]),
+                        'LSTM_LAYERS': lstm_layers,
+                        'LSTM_DROPOUT': lstm_dropout,
+                        'TIMESTEPS_PER_BATCH': 2048,
+                        'MINI_BATCH_SIZE': 64,
+                    }
+
+                    # Generate a unique run_id using trial number
+                    run_id = f"TRIAL_{trial.number}_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+                    # Set seeds for reproducibility
+                    seed = trial.number
+                    np.random.seed(seed)
+                    torch.manual_seed(seed)
+                    random.seed(seed)
+
+                    # Create a new environment for this trial
+                    trial_env = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+
+                    # Initialize the trading strategy with the correct state_dim
+                    strategyModule = importlib.import_module('PPO')
+                    className = getattr(strategyModule, 'PPO')
+                    tradingStrategy = className(state_dim, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
+
+                    # Train the strategy
+                    trainingParameters = [numberOfEpisodes]
+                    trial_env = tradingStrategy.training(
+                        trial_env, trainingParameters=trainingParameters,
+                        verbose=False, rendering=False,
+                        plotTraining=False, showPerformance=False
+                    )
+
+                    # Testing phase
+                    testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
+                    testingEnv = tradingStrategy.testing(trial_env, testingEnv, rendering=False, showPerformance=False)
+
+                    # Evaluate performance
+                    analyser = PerformanceEstimator(testingEnv.data)
+                    performance = analyser.computeSharpeRatio()
+
+                    # Clean up
+                    del trial_env
+                    del testingEnv
+                    del tradingStrategy
+
+                    # Optuna minimizes the objective, so return negative Sharpe Ratio
+                    return -performance
+            
+                except Exception as e:
+                    print(f"Trial {trial.number} failed with exception: {e}")
+                    return float('inf')  # Return a high value to indicate failure
+                finally:
+                    pbar.update(1)  # Update progress bar after each trial
             
         # Create the Optuna study and optimize
         study = optuna.create_study(direction='minimize')
@@ -701,37 +719,37 @@ class TradingSimulator:
             'MEMORY_SIZE': 10000,
             'LSTM_HIDDEN_SIZE': best_params['LSTM_HIDDEN_SIZE'],
             'LSTM_LAYERS': best_params['LSTM_LAYERS'],
-            'LSTM_DROPOUT': best_params.get('LSTM_DROPOUT', 0.0),  # Use get() with default 0.0
+            'LSTM_DROPOUT': best_params.get('LSTM_DROPOUT', 0.0),
+            'TIMESTEPS_PER_BATCH': 2048,
+            'MINI_BATCH_SIZE': 64,
         }
-
-        # Increase the number of episodes for final training
-        final_number_of_episodes = 100  # Adjust as needed
 
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        # Train the final model with the best hyperparameters
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+        # Train the final model with the best hyperparameters using correct state_dim
+        final_env = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
         strategyModule = importlib.import_module('PPO')
         className = getattr(strategyModule, 'PPO')
 
-        # Pass the run_id when initializing the PPO agent
-        tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
+        # Pass the correct state_dim when initializing the final model
+        tradingStrategy = className(state_dim, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
 
-        trainingParameters = [final_number_of_episodes]
-        trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
-                                           verbose=True, rendering=rendering,
-                                           plotTraining=True, showPerformance=True)
+        # Train the final model with more episodes
+        trainingParameters = [final_train_episodes]  # Use final_train_episodes instead of numberOfEpisodes
+        final_env = tradingStrategy.training(final_env, trainingParameters=trainingParameters,
+                                         verbose=True, rendering=rendering,
+                                         plotTraining=True, showPerformance=True)
 
         # Test the final model
         testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
-        testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=rendering, showPerformance=True)
+        testingEnv = tradingStrategy.testing(final_env, testingEnv, rendering=rendering, showPerformance=True)
 
         # Show the entire unified rendering of the training and testing phases
         if rendering:
-            self.plotEntireTrading(trainingEnv, testingEnv)
+            self.plotEntireTrading(final_env, testingEnv)
 
-        return tradingStrategy, trainingEnv, testingEnv
+        return tradingStrategy, final_env, testingEnv
     
 
     def evaluateStrategy(self, strategyName,
