@@ -422,7 +422,7 @@ class TradingSimulator:
         # 2. TRAINING PHASE
 
         # Initialize the trading environment associated with the training phase
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=10, max_holding_period=100)
 
         # Instanciate the strategy classes
          # Instantiate the strategy classes
@@ -584,7 +584,7 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=10, n_trials=50, rendering=False):
+                            numberOfEpisodes=20, n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -705,7 +705,7 @@ class TradingSimulator:
         }
 
         # Increase the number of episodes for final training
-        final_number_of_episodes = 2  # Adjust as needed
+        final_number_of_episodes = 100  # Adjust as needed
 
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"

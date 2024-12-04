@@ -64,7 +64,7 @@ class TradingEnv(gym.Env):
     """
 
     def __init__(self, marketSymbol, startingDate, endingDate, money, stateLength=30,
-                 transactionCosts=0, startingPoint=0):
+             transactionCosts=0, startingPoint=0, min_holding_period=10, max_holding_period=100):
         """
         GOAL: Object constructor initializing the trading environment by setting up
               the trading activity dataframe as well as other important variables.
@@ -84,6 +84,10 @@ class TradingEnv(gym.Env):
 
         # Move stateLength initialization to the top
         self.stateLength = stateLength
+        # Initialize holding period constraints
+        self.min_holding_period = min_holding_period
+        self.max_holding_period = max_holding_period
+        self.holding_period = 0  # Days the current position has been held
 
         # CASE 1: Fictive stock generation
         if(marketSymbol in fictiveStocks):
@@ -267,29 +271,23 @@ class TradingEnv(gym.Env):
         numberOfShares = self.numberOfShares
         self.customReward = False  # Reset custom reward flag
 
-        # Enforce the constraints
-        # If holding period is less than 30 days, agent cannot change position
-        # If holding period is 360 days or more, agent must change position
-        min_holding_period = 30
-        max_holding_period = 360
-
         current_position = self.data['Position'][t - 1]  # Previous position
 
         # Check if the agent is trying to change position
         trying_to_change = (action != (1 if current_position == 1 else 0))
 
         # Enforce minimum holding period
-        if self.holding_period < min_holding_period:
+        if self.holding_period < self.min_holding_period:
             if trying_to_change:
                 # Prevent position change
                 action = 1 if current_position == 1 else 0
         # Enforce maximum holding period
-        elif self.holding_period >= max_holding_period:
+        elif self.holding_period >= self.max_holding_period:
             if not trying_to_change:
                 # Force position change
                 action = 0 if current_position == 1 else 1
-            # Reset holding period after forced change
-            self.holding_period = 0
+                # Reset holding period after forced change
+                self.holding_period = 0
 
         # Update holding period
         if action == (1 if current_position == 1 else 0):
