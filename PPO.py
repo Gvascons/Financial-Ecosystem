@@ -229,7 +229,8 @@ class PPO:
         # Create a copy of the state to avoid modifying the original
         processed_state = state.copy()
         
-        # Get the sequences
+        # Process base features using original logic
+        # Get the sequences for base features
         closePrices = processed_state[0]
         lowPrices = processed_state[1]
         highPrices = processed_state[2]
@@ -237,7 +238,7 @@ class PPO:
         
         # 1. Close price => returns => MinMax normalization
         returns = np.zeros_like(closePrices)
-        returns[1:] = np.diff(closePrices) / closePrices[:-1]  # Calculate returns
+        returns[1:] = np.diff(closePrices) / closePrices[:-1]
         if coefficients[0][0] != coefficients[0][1]:
             returns = np.clip((returns - coefficients[0][0]) / (coefficients[0][1] - coefficients[0][0]), -1, 1)
         processed_state[0] = returns
@@ -263,6 +264,41 @@ class PPO:
         if coefficients[3][0] != coefficients[3][1]:
             volumes = np.clip((volumes - coefficients[3][0]) / (coefficients[3][1] - coefficients[3][0]), 0, 1)
         processed_state[3] = volumes
+        
+        # Process additional technical indicators (starting from index 4)
+        for i in range(4, len(processed_state)):
+            feature_data = processed_state[i]
+            
+            if i in [4, 5, 6, 7]:  # SMA and EMA features
+                # Process like close prices (returns)
+                returns = np.zeros_like(feature_data)
+                returns[1:] = np.diff(feature_data) / feature_data[:-1]
+                processed_state[i] = np.clip((returns - coefficients[0][0]) / (coefficients[0][1] - coefficients[0][0]), -1, 1)
+                
+            elif i == 8:  # RSI
+                processed_state[i] = feature_data / 100.0
+                
+            elif i in [9, 10, 11]:  # MACD components
+                mean = np.mean(feature_data)
+                std = np.std(feature_data) + 1e-8
+                processed_state[i] = np.clip((feature_data - mean) / std, -3, 3)
+                
+            elif i in [12, 13, 14]:  # Bollinger Bands
+                if i == 12:  # Middle band - process like close prices
+                    returns = np.zeros_like(feature_data)
+                    returns[1:] = np.diff(feature_data) / feature_data[:-1]
+                    processed_state[i] = np.clip((returns - coefficients[0][0]) / (coefficients[0][1] - coefficients[0][0]), -1, 1)
+                else:  # Upper and Lower bands - relative to middle band
+                    middle_band = processed_state[12]
+                    processed_state[i] = (feature_data - middle_band) / (middle_band + 1e-8)
+                    
+            elif i == 15:  # ATR
+                mean = np.mean(feature_data)
+                std = np.std(feature_data) + 1e-8
+                processed_state[i] = np.clip((feature_data - mean) / std, -3, 3)
+                
+            elif i == 16:  # OBV - process like volume
+                processed_state[i] = np.clip((feature_data - coefficients[3][0]) / (coefficients[3][1] - coefficients[3][0]), 0, 1)
         
         return processed_state
 
@@ -457,6 +493,12 @@ class PPO:
                     startingPoint = random.randrange(len(env_instance.data.index))
                     env_instance.setStartingPoint(startingPoint)
                     state = self.processState(env_instance.state, coefficients)
+
+                    """ # Print feature names and values
+                    print("Feature names and values:")
+                    for feature_name, feature_values in zip(trainingEnv.features, state):
+                        print(f"{feature_name}: {feature_values}") """
+
                     done = False
                     steps = 0
                     

@@ -584,7 +584,7 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=20, n_trials=50, rendering=False):
+                            numberOfEpisodes=2, n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -705,7 +705,7 @@ class TradingSimulator:
         }
 
         # Increase the number of episodes for final training
-        final_number_of_episodes = 100  # Adjust as needed
+        final_number_of_episodes = 2  # Adjust as needed
 
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"

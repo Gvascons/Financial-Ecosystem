@@ -173,6 +173,55 @@ class TradingEnv(gym.Env):
         self.action_space = 2  # 0 for short, 1 for long
         self.observation_space = len(self.features) + 1  # Number of features plus position
 
+        # Calculate technical indicators
+        self.calculate_technical_indicators()
+
+    def calculate_technical_indicators(self):
+        """Calculate all technical indicators used in the feature set"""
+        # Simple Moving Averages
+        self.data['SMA_10'] = self.data['Close'].rolling(window=10).mean()
+        self.data['SMA_20'] = self.data['Close'].rolling(window=20).mean()
+        
+        # Exponential Moving Averages
+        self.data['EMA_10'] = self.data['Close'].ewm(span=10, adjust=False).mean()
+        self.data['EMA_20'] = self.data['Close'].ewm(span=20, adjust=False).mean()
+        
+        # RSI
+        delta = self.data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        self.data['RSI_14'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        exp1 = self.data['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = self.data['Close'].ewm(span=26, adjust=False).mean()
+        self.data['MACD'] = exp1 - exp2
+        self.data['MACD_Signal'] = self.data['MACD'].ewm(span=9, adjust=False).mean()
+        self.data['MACD_Hist'] = self.data['MACD'] - self.data['MACD_Signal']
+        
+        # Bollinger Bands
+        self.data['BB_Middle'] = self.data['Close'].rolling(window=20).mean()
+        bb_std = self.data['Close'].rolling(window=20).std()
+        self.data['BB_Upper'] = self.data['BB_Middle'] + (bb_std * 2)
+        self.data['BB_Lower'] = self.data['BB_Middle'] - (bb_std * 2)
+        
+        # Average True Range (ATR)
+        high_low = self.data['High'] - self.data['Low']
+        high_close = np.abs(self.data['High'] - self.data['Close'].shift())
+        low_close = np.abs(self.data['Low'] - self.data['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = np.max(ranges, axis=1)
+        self.data['ATR_14'] = true_range.rolling(14).mean()
+        
+        # On-Balance Volume (OBV)
+        self.data['OBV'] = (np.sign(self.data['Close'].diff()) * self.data['Volume']).fillna(0).cumsum()
+        
+        # Forward fill any NaN values created by the indicators
+        self.data = self.data.fillna(method='ffill')
+        # Back fill any remaining NaN values at the beginning
+        self.data = self.data.fillna(method='bfill')
+
     def getState(self, t):
         """
         GOAL: Construct the state representation for the agent.

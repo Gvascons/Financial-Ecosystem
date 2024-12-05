@@ -52,6 +52,10 @@ class DataAugmentation:
                             data augmentation techniques implemented.       
     """
     
+    def recalculate_indicators(self, tradingEnv):
+        """Recalculate technical indicators for the augmented trading environment."""
+        tradingEnv.calculate_technical_indicators()
+
     def shiftTimeSeries(self, tradingEnv, shiftMagnitude=0):
         """
         GOAL: Generate a new trading environment by simply shifting up or down
@@ -73,6 +77,9 @@ class DataAugmentation:
         
         # Shifting of the volume time series
         newTradingEnv.data['Volume'] += shiftMagnitude
+
+        # Recalculate indicators for the new trading environment
+        self.recalculate_indicators(newTradingEnv)
 
         # Return the new trading environment generated
         return newTradingEnv
@@ -100,6 +107,9 @@ class DataAugmentation:
             newTradingEnv.data['Low'][i] = newTradingEnv.data['Close'][i] * tradingEnv.data['Low'][i]/tradingEnv.data['Close'][i]
             newTradingEnv.data['High'][i] = newTradingEnv.data['Close'][i] * tradingEnv.data['High'][i]/tradingEnv.data['Close'][i]
             newTradingEnv.data['Open'][i] = newTradingEnv.data['Close'][i-1]
+
+        # Recalculate indicators for the new trading environment
+        self.recalculate_indicators(newTradingEnv)
 
         # Return the new trading environment generated
         return newTradingEnv
@@ -134,6 +144,9 @@ class DataAugmentation:
             newTradingEnv.data['Volume'][i] *= (1 + volumeNoise/100)
             newTradingEnv.data['Open'][i] = newTradingEnv.data['Close'][i-1]
 
+        # Recalculate indicators for the new trading environment
+        self.recalculate_indicators(newTradingEnv)
+
         # Return the new trading environment generated
         return newTradingEnv
 
@@ -164,6 +177,9 @@ class DataAugmentation:
             newTradingEnv.data['Volume'][i] = tradingEnv.data['Volume'][i]
         newTradingEnv.data['Open'] = newTradingEnv.data['Close'].shift(1)
         newTradingEnv.data['Open'][0] = tradingEnv.data['Open'][0]
+
+        # Recalculate indicators for the new trading environment
+        self.recalculate_indicators(newTradingEnv)
 
         # Return the new trading environment generated
         return newTradingEnv
