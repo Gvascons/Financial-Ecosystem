@@ -326,18 +326,31 @@ class PerformanceEstimator:
         return self.performanceTable
 
 
-    def displayPerformance(self, name, phase='training'):
+    def displayPerformance(self, strategy, phase='testing'):
         """
-        Compute, display and save the performance metrics.
-        
-        INPUTS: - name: Name of the strategy
-                - phase: Either 'training' or 'testing'
+        Display and save the performance metrics
         """
         # Generation of the performance table
         self.computePerformance()
         
+        # Create the results directory if it doesn't exist
+        if not os.path.exists('Results'):
+            os.makedirs('Results')
+
+        # Save performance metrics to CSV
+        metrics_df = pd.DataFrame(self.performanceTable, columns=['Metric', 'Value'])
+        
+        # Use run_id in the filename if available
+        filename_prefix = f"performance_metrics_{strategy}_{phase}"
+        if hasattr(self, 'run_id') and self.run_id:
+            filename = f"{filename_prefix}_{self.run_id}.csv"
+        else:
+            filename = f"{filename_prefix}.csv"
+        
+        metrics_df.to_csv(os.path.join('Results', filename), index=False)
+
         # Display the table in the console
-        headers = ["Performance Indicator", name]
+        headers = ["Performance Indicator", strategy]
         tabulation = tabulate(self.performanceTable, headers, tablefmt="fancy_grid", stralign="center")
         print(f"\n{phase.upper()} PERFORMANCE:")
         print(tabulation)
@@ -352,7 +365,7 @@ class PerformanceEstimator:
                 print("\nWarning: No run_id provided, using current timestamp")
                 run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            filename = os.path.join('Results', f'performance_metrics_{name}_{phase}_{run_id}.csv')
+            filename = os.path.join('Results', f'performance_metrics_{strategy}_{phase}_{run_id}.csv')
             
             # Convert performance table to dict for easier saving
             metrics_dict = {row[0]: row[1] for row in self.performanceTable}

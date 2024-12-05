@@ -584,7 +584,7 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=20, n_trials=50, rendering=False):
+                            numberOfEpisodes=1, n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -668,7 +668,14 @@ class TradingSimulator:
                 testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=False, showPerformance=False)
 
                 # Evaluate performance
+                # Save both training and testing performance metrics for each trial
+                analyser = PerformanceEstimator(trainingEnv.data)
+                analyser.run_id = run_id
+                analyser.displayPerformance('PPO', phase='training')  # This will save training metrics
+
                 analyser = PerformanceEstimator(testingEnv.data)
+                analyser.run_id = run_id
+                analyser.displayPerformance('PPO', phase='testing')  # This will save testing metrics
                 performance = analyser.computeSharpeRatio()
 
                 # Optuna minimizes the objective, so return negative Sharpe Ratio
@@ -705,7 +712,7 @@ class TradingSimulator:
         }
 
         # Increase the number of episodes for final training
-        final_number_of_episodes = 100  # Adjust as needed
+        final_number_of_episodes = 1  # Adjust as needed
 
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
