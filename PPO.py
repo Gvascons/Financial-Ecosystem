@@ -22,6 +22,10 @@ from tradingEnv import TradingEnv  # Ensure this is available
 import pandas as pd
 import traceback
 
+# Detect device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# print(f"Using device: {device}")
+
 # Create Figures directory if it doesn't exist
 if not os.path.exists('Figs'):
     os.makedirs('Figs')
@@ -97,6 +101,7 @@ class PPONetwork(nn.Module):
                 torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(device))
 
     def forward(self, x):
+        assert x.is_cuda, "Input is not on CUDA"
         """
         Forward pass of the network.
         Expected input shape: [batch_size, num_features, sequence_length]
@@ -140,7 +145,7 @@ class PPO:
     """Implementation of PPO algorithm for trading"""
     def __init__(self, state_dim, action_dim, PPO_PARAMS=None, device='cpu', marketSymbol=None, run_id=None):
         """Initialize PPO agent"""
-        self.device = device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.market_symbol = marketSymbol
         self.run_id = run_id 
         
@@ -173,6 +178,7 @@ class PPO:
         print(f"Initializing PPO with input size: {self.input_size}, action size: {self.num_actions}")
         
         self.network = PPONetwork(self.input_size, self.num_actions, self.PPO_PARAMS).to(self.device)
+        print(f"Network device: {next(self.network.parameters()).device}")  # Debug print
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.PPO_PARAMS['LEARNING_RATE'])
         
         # Initialize memory
@@ -275,21 +281,44 @@ class PPO:
 
     def select_action(self, state):
         """Select an action from the current policy"""
-        # Convert to tensor
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        
-        # Reset LSTM hidden state for new sequences
-        if self.prev_state is None or not torch.equal(state, self.prev_state):
-            self.network.hidden = None
-        self.prev_state = state.clone()
-        
-        with torch.no_grad():
-            probs, value = self.network(state)
-            dist = Categorical(probs)
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-        
-        return action.item(), log_prob.item(), value.item()
+        try:
+            # Convert state to tensor and move to CUDA
+            if isinstance(state, np.ndarray):
+                state = torch.FloatTensor(state)
+            elif isinstance(state, list):
+                state = torch.FloatTensor(state)
+            
+            # Add batch dimension if needed
+            if len(state.shape) == 2:
+                state = state.unsqueeze(0)
+            
+            # Move to device
+            state = state.to(self.device)
+            
+            """ # Add device verification
+            if torch.cuda.is_available():
+                print("\nGPU Verification in select_action:")
+                print(f"Input state device: {state.device}")
+                print(f"Network device: {next(self.network.parameters()).device}") """
+            
+            # Reset LSTM hidden state for new sequences
+            if self.prev_state is None or not torch.equal(state, self.prev_state):
+                self.network.hidden = None
+            self.prev_state = state.clone()
+            
+            with torch.no_grad():
+                probs, value = self.network(state)
+                dist = Categorical(probs)
+                action = dist.sample()
+                log_prob = dist.log_prob(action)
+            
+            return action.item(), log_prob.item(), value.item()
+            
+        except Exception as e:
+            print(f"Error in select_action: {str(e)}")
+            print(f"State type: {type(state)}")
+            print(f"State shape: {np.shape(state) if isinstance(state, np.ndarray) else None}")
+            raise
 
     def store_transition(self, state, action, reward, next_state, done, log_prob, value):
         """Store a transition in memory"""
@@ -308,6 +337,8 @@ class PPO:
         if len(self.memory) < self.PPO_PARAMS['BATCH_SIZE']:
             return
         
+        # Ensure the network is in training mode
+        self.network.train()
         # Convert stored transitions to tensors more efficiently
         # First convert lists to numpy arrays, then to tensors
         states = np.array([t['state'] for t in self.memory])
@@ -457,6 +488,12 @@ class PPO:
                     startingPoint = random.randrange(len(env_instance.data.index))
                     env_instance.setStartingPoint(startingPoint)
                     state = self.processState(env_instance.state, coefficients)
+
+                    # Print feature names and values
+                    """ print("Feature names and values:")
+                    for feature_name, feature_values in zip(trainingEnv.features, state):
+                        print(f"{feature_name}: {feature_values}") """
+
                     done = False
                     steps = 0
                     

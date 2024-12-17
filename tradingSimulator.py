@@ -345,7 +345,7 @@ class TradingSimulator:
                         bounds=bounds, step=step, numberOfEpisodes=numberOfEpisodes,
                         verbose=True, plotTraining=True, rendering=True, showPerformance=True,
                         saveStrategy=False,
-                        PPO_PARAMS=None):  # Add PPO_PARAMS
+                        PPO_PARAMS=None, min_holding_period=10, max_holding_period=30):  # Add PPO_PARAMS
         """
         Simulate a new trading strategy on a certain stock included in the testbench.
         """
@@ -422,7 +422,7 @@ class TradingSimulator:
         # 2. TRAINING PHASE
 
         # Initialize the trading environment associated with the training phase
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=10, max_holding_period=100)
+        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
 
         # Instanciate the strategy classes
          # Instantiate the strategy classes
@@ -584,7 +584,7 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=20, n_trials=50, rendering=False):
+                            numberOfEpisodes=100, n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -611,6 +611,9 @@ class TradingSimulator:
         # Define the objective function for Optuna
         def objective(trial):
             try:
+                # Sugerir períodos mínimo e máximo de holding
+                min_holding_period = trial.suggest_int('min_holding_period', 1, 30) ############################
+                max_holding_period = trial.suggest_int('max_holding_period', 50, 200) ############################
                 # Suggest number of LSTM layers
                 lstm_layers = trial.suggest_int('LSTM_LAYERS', 1, 3)
 
@@ -653,7 +656,7 @@ class TradingSimulator:
                 random.seed(seed)
 
                 # Initialize the trading environment
-                trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+                trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
 
                 # Train the strategy
                 trainingParameters = [numberOfEpisodes]
@@ -664,7 +667,7 @@ class TradingSimulator:
                 )
 
                 # Testing phase
-                testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
+                testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
                 testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=False, showPerformance=False)
 
                 # Evaluate performance
@@ -685,6 +688,9 @@ class TradingSimulator:
         # Get the best hyperparameters
         best_params = study.best_params
         print("Best hyperparameters:", best_params)
+
+        min_holding_period = best_params['min_holding_period']
+        max_holding_period = best_params['max_holding_period']
 
         # Use the best hyperparameters to train the final model
         PPO_PARAMS = {
@@ -711,7 +717,7 @@ class TradingSimulator:
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         # Train the final model with the best hyperparameters
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts)
+        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
         strategyModule = importlib.import_module('PPO')
         className = getattr(strategyModule, 'PPO')
 
@@ -724,7 +730,7 @@ class TradingSimulator:
                                            plotTraining=True, showPerformance=True)
 
         # Test the final model
-        testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts)
+        testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
         testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=rendering, showPerformance=True)
 
         # Show the entire unified rendering of the training and testing phases
