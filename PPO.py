@@ -31,6 +31,25 @@ if not os.path.exists('Figs'):
     os.makedirs('Figs')
 
 class PPONetwork(nn.Module):
+    """
+    Neural network architecture for the PPO agent that combines LSTM and feedforward layers.
+    
+    The network processes sequential market data through an LSTM layer followed by
+    shared feature extraction layers. It then splits into separate actor and critic
+    heads for policy and value estimation respectively.
+
+    Attributes:
+        num_features (int): Number of input features per timestep
+        sequence_length (int): Number of timesteps in the input sequence
+        feature_dim (int): Dimension of the feature extraction layers
+        lstm_hidden_size (int): Size of LSTM hidden states
+        lstm_layers (int): Number of LSTM layers
+        lstm (nn.LSTM): LSTM layer for sequential processing
+        shared (nn.Sequential): Shared feature extraction layers
+        actor (nn.Sequential): Policy head outputting action probabilities
+        critic (nn.Sequential): Value head estimating state values
+        hidden (tuple): LSTM hidden state cache (h_n, c_n)
+    """
     def __init__(self, input_size, num_actions, PPO_PARAMS):
         super().__init__()
         self.PPO_PARAMS = PPO_PARAMS  # Store PPO_PARAMS as an instance variable
@@ -142,7 +161,37 @@ class PPONetwork(nn.Module):
         return action_probs, value
 
 class PPO:
-    """Implementation of PPO algorithm for trading"""
+    """
+    Proximal Policy Optimization (PPO) agent for trading environments.
+    
+    This implementation uses a combined policy-value network architecture with
+    LSTM layers to handle sequential market data. It includes features like
+    Generalized Advantage Estimation (GAE) and clipped objective function.
+
+    Attributes:
+        device (torch.device): Device to run computations on (CPU/GPU)
+        market_symbol (str): Trading symbol being trained on
+        run_id (str): Unique identifier for the training run
+        network (PPONetwork): Main neural network
+        optimizer (torch.optim): Adam optimizer for network updates
+        memory (deque): Replay buffer storing transitions
+        training_step (int): Global step counter for training
+        PPO_PARAMS (dict): Dictionary of hyperparameters including:
+            - CLIP_EPSILON: PPO clipping parameter
+            - VALUE_LOSS_COEF: Value function loss coefficient
+            - ENTROPY_COEF: Entropy bonus coefficient
+            - PPO_EPOCHS: Number of epochs to optimize on each batch
+            - BATCH_SIZE: Size of training minibatches
+            - GAMMA: Discount factor
+            - GAE_LAMBDA: GAE parameter
+            - LEARNING_RATE: Optimizer learning rate
+            - MAX_GRAD_NORM: Gradient clipping threshold
+            - HIDDEN_SIZE: Size of hidden layers
+            - MEMORY_SIZE: Size of replay buffer
+            - LSTM_HIDDEN_SIZE: Size of LSTM hidden states
+            - LSTM_LAYERS: Number of LSTM layers
+            - LSTM_DROPOUT: LSTM dropout probability
+    """
     def __init__(self, state_dim, action_dim, PPO_PARAMS=None, device='cpu', marketSymbol=None, run_id=None):
         """Initialize PPO agent"""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -187,89 +236,190 @@ class PPO:
         # Initialize training step counter
         self.training_step = 0
         
-        # Initialize performance tracking
-        self.best_reward = float('-inf')
-        self.trailing_rewards = deque(maxlen=100)
-
         # Additional tracking variables
-        self.market_symbol = marketSymbol
-        self.prev_action = None
         self.prev_state = None
 
     def getNormalizationCoefficients(self, tradingEnv):
         """
-        Same as in TDQN
-        """
-        # Retrieve the available trading data
-        tradingData = tradingEnv.data
-        closePrices = tradingData['Close'].tolist()
-        lowPrices = tradingData['Low'].tolist()
-        highPrices = tradingData['High'].tolist()
-        volumes = tradingData['Volume'].tolist()
+        Calculate normalization coefficients for key features in the trading environment.
 
-        # Retrieve the coefficients required for the normalization
+        This method scans through the environment's data (e.g., close prices, volumes, 
+        plus any technical indicators) and computes min-max or specialized ranges 
+        for each feature. These ranges will then be used by processState() to normalize 
+        the data appropriately.
+
+        Parameters:
+        -----------
+        tradingEnv : TradingEnv
+            The trading environment instance containing the market data and 
+            any precomputed technical indicators.
+
+        Returns:
+        --------
+        coefficients : list of tuples
+            A list of (min_val, max_val) tuples, one for each feature in the order 
+            they will be processed in processState(). This allows for consistent 
+            min-max or specialized normalization logic for each feature.
+        """
+        tradingData = tradingEnv.data
         coefficients = []
         margin = 1
+
         # 1. Close price => returns (absolute) => maximum value (absolute)
-        returns = [abs((closePrices[i]-closePrices[i-1])/closePrices[i-1]) for i in range(1, len(closePrices))]
-        coeffs = (0, np.max(returns)*margin)
+        closePrices = tradingData['Close'].tolist()
+        returns = [abs((closePrices[i] - closePrices[i - 1]) / closePrices[i - 1]) for i in range(1, len(closePrices))]
+        coeffs = (0, np.max(returns) * margin)
         coefficients.append(coeffs)
+
         # 2. Low/High prices => Delta prices => maximum value
-        deltaPrice = [abs(highPrices[i]-lowPrices[i]) for i in range(len(lowPrices))]
-        coeffs = (0, np.max(deltaPrice)*margin)
+        lowPrices = tradingData['Low'].tolist()
+        highPrices = tradingData['High'].tolist()
+        deltaPrice = [abs(highPrices[i] - lowPrices[i]) for i in range(len(lowPrices))]
+        coeffs = (0, np.max(deltaPrice) * margin)
         coefficients.append(coeffs)
+
         # 3. Close/Low/High prices => Close price position => no normalization required
         coeffs = (0, 1)
         coefficients.append(coeffs)
+
         # 4. Volumes => minimum and maximum values
-        coeffs = (np.min(volumes)/margin, np.max(volumes)*margin)
+        volumes = tradingData['Volume'].tolist()
+        coeffs = (np.min(volumes) / margin, np.max(volumes) * margin)
         coefficients.append(coeffs)
+
+        # 5. Technical indicators
+        technical_indicators = [
+            'SMA_10', 'SMA_20', 'EMA_10', 'EMA_20',
+            'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Hist',
+            'BB_Middle', 'BB_Upper', 'BB_Lower', 'ATR_14', 'OBV'
+        ]
+
+        for indicator in technical_indicators:
+            values = tradingData[indicator].tolist()
+            if len(values) == 0:
+                # Default if no values are available
+                coeffs = (0, 1)
+                coefficients.append(coeffs)
+                continue
+
+            # For RSI, which is typically 0 to 100
+            if indicator == 'RSI_14':
+                coeffs = (0, 100)  
+            # For MACD-related indicators (can be negative)
+            elif indicator in ['MACD', 'MACD_Signal', 'MACD_Hist']:
+                max_abs = max(abs(np.min(values)), abs(np.max(values)))
+                coeffs = (-max_abs * margin, max_abs * margin)
+            else:
+                # Generic min-max for other indicators
+                coeffs = (np.min(values) / margin, np.max(values) * margin)
+
+            coefficients.append(coeffs)
 
         return coefficients
 
+
     def processState(self, state, coefficients):
         """
-        Process the RL state returned by the environment
-        (appropriate format and normalization)
+        Convert raw environment state to a normalized format suitable for PPO.
+
+        The PPO agent expects a consistent input shape across time steps. This method 
+        takes the raw state (features + position) and applies normalization to ensure 
+        stable network training.
+
+        The first 17 entries represent distinct features derived from the environment:
+        - Index 0 : Close prices (converted into returns).
+        - Index 1 : Low prices (used in combination with High for delta).
+        - Index 2 : High prices (used in combination with Low for delta).
+        - Index 3 : Volumes.
+        - Indices 4..16 : Technical indicators 
+                            (e.g., SMA, EMA, RSI, MACD, Bollinger Bands, ATR, OBV).
+        The last entry (index 17) indicates the position dimension (−1 for short, 0 for no position, 
+        +1 for long). This is intentionally excluded from normalization to preserve its meaning.
+
+        Parameters:
+        -----------
+        state : list or ndarray
+            The raw state as returned by the environment, shaped as [num_features], 
+            where num_features = 18 in this setup (17 features + 1 position).
+        coefficients : list of tuples
+            A list of (min_val, max_val) tuples, specifying the range for each 
+            feature to be used during normalization.
+
+        Returns:
+        --------
+        processed_state : list or ndarray
+            An updated copy of the input state with each feature normalized or otherwise 
+            transformed as requested. The position dimension remains unchanged.
+
+        ------------------------------
+
+        Explanation for the elif i in [1, 2] logic:
+            The code that calculates delta_price (High - Low) and the close_price_position ratio
+            is purposefully placed in the branch where i == 1 (i.e., for Low).
+            Even though we check i in [1,2], the actual work is only performed for i == 1
+            because we need both Low (index 1) and High (index 2) at the same time.
+            By the time the loop reaches i == 2, all the computations for High are already done,
+            so we do nothing there.
+        
+        :param state: The original environment state (np.ndarray or similar).
+        :param coefficients: A list of (min_val, max_val) tuples for each feature.
+        :return: The state after applying feature-specific transformations and normalization.
         """
-        # Create a copy of the state to avoid modifying the original
         processed_state = state.copy()
-        
-        # Get the sequences
-        closePrices = processed_state[0]
-        lowPrices = processed_state[1]
-        highPrices = processed_state[2]
-        volumes = processed_state[3]
-        
-        # 1. Close price => returns => MinMax normalization
-        returns = np.zeros_like(closePrices)
-        returns[1:] = np.diff(closePrices) / closePrices[:-1]  # Calculate returns
-        if coefficients[0][0] != coefficients[0][1]:
-            returns = np.clip((returns - coefficients[0][0]) / (coefficients[0][1] - coefficients[0][0]), -1, 1)
-        processed_state[0] = returns
-        
-        # 2. Low/High prices => Delta prices => MinMax normalization
-        deltaPrice = np.abs(highPrices - lowPrices)
-        if coefficients[1][0] != coefficients[1][1]:
-            deltaPrice = np.clip((deltaPrice - coefficients[1][0]) / (coefficients[1][1] - coefficients[1][0]), 0, 1)
-        processed_state[1] = deltaPrice
-        
-        # 3. Close/Low/High prices => Close price position => No normalization required
-        closePricePosition = np.zeros_like(closePrices)
-        delta = np.abs(highPrices - lowPrices)
-        mask = delta != 0
-        closePricePosition[mask] = np.abs(closePrices[mask] - lowPrices[mask]) / delta[mask]
-        closePricePosition[~mask] = 0.5
-        if coefficients[2][0] != coefficients[2][1]:
-            closePricePosition = np.clip((closePricePosition - coefficients[2][0]) / 
-                                       (coefficients[2][1] - coefficients[2][0]), 0, 1)
-        processed_state[2] = closePricePosition
-        
-        # 4. Volumes => MinMax normalization
-        if coefficients[3][0] != coefficients[3][1]:
-            volumes = np.clip((volumes - coefficients[3][0]) / (coefficients[3][1] - coefficients[3][0]), 0, 1)
-        processed_state[3] = volumes
-        
+
+        for i in range(len(processed_state)):
+            # If this is the position dimension, skip normalization
+            if i == len(processed_state) - 1: # position dimension (-1, 0, or +1)
+                continue
+
+            feature = processed_state[i]
+            min_val, max_val = coefficients[i]
+
+            if i == 0:  # Close prices: convert to returns +normalizing
+                returns = np.zeros_like(feature)
+                returns[1:] = np.diff(feature) / feature[:-1]
+                if min_val != max_val:
+                    returns = np.clip((returns - min_val) / (max_val - min_val), -1, 1)
+                processed_state[i] = returns
+
+            elif i in [1, 2]:  # Low & High prices=> delta + close price position
+                # We only handle Low & High at i == 1; i == 2 does nothing by design,
+                # as everything needed for High is done in the same step
+                if i == 1:
+                    # 1. Compute delta price
+                    delta_price = np.abs(processed_state[2] - processed_state[1])
+                    if min_val != max_val:
+                        delta_price = np.clip((delta_price - min_val) / (max_val - min_val), 0, 1)
+                    processed_state[1] = delta_price
+
+                    # 2. Derive the close_price_position ratio
+                    close_price_returns = processed_state[0]
+                    close_price_position = np.zeros_like(close_price_returns)
+                    mask = delta_price != 0
+                    close_price_position[mask] = (
+                        np.abs(close_price_returns[mask] - processed_state[1][mask]) 
+                        / delta_price[mask]
+                    )
+                    close_price_position[~mask] = 0.5
+
+                    # 3. Optionally clip/rescale that ratio using the 3rd coefficient
+                    min_val, max_val = coefficients[2]
+                    if min_val != max_val:
+                        close_price_position = np.clip(
+                            (close_price_position - min_val) / (max_val - min_val),
+                            0, 1
+                        )
+                    processed_state[2] = close_price_position
+
+            else:  # Volume and Technical indicators
+                if min_val != max_val:
+                    processed_state[i] = np.clip(
+                        (feature - min_val) / (max_val - min_val),
+                        0, 1
+                    )
+                else:
+                    processed_state[i] = np.zeros_like(feature)
+
         return processed_state
 
     def processReward(self, reward):
@@ -280,7 +430,18 @@ class PPO:
         return np.clip(reward, -rewardClipping, rewardClipping)
 
     def select_action(self, state):
-        """Select an action from the current policy"""
+        """
+        Select an action from the current policy.
+
+        Args:
+            state (torch.Tensor or np.ndarray): Current environment state
+
+        Returns:
+            tuple: (action, log_prob, value) where:
+                - action (int): Selected action index
+                - log_prob (float): Log probability of selected action
+                - value (float): Critic's value estimate for the state
+        """
         try:
             # Convert state to tensor and move to CUDA
             if isinstance(state, np.ndarray):
@@ -294,7 +455,7 @@ class PPO:
             
             # Move to device
             state = state.to(self.device)
-            
+
             """ # Add device verification
             if torch.cuda.is_available():
                 print("\nGPU Verification in select_action:")
@@ -302,9 +463,10 @@ class PPO:
                 print(f"Network device: {next(self.network.parameters()).device}") """
             
             # Reset LSTM hidden state for new sequences
-            if self.prev_state is None or not torch.equal(state, self.prev_state):
+            # We can use state.data_ptr() for a more efficient comparison
+            if self.prev_state is None or state.data_ptr()!= self.prev_state.data_ptr():
                 self.network.hidden = None
-            self.prev_state = state.clone()
+                self.prev_state = state  # No need to clone, juststore the reference
             
             with torch.no_grad():
                 probs, value = self.network(state)
@@ -333,7 +495,18 @@ class PPO:
         })
 
     def update_policy(self):
-        """Update policy using PPO"""
+        """
+        Update policy and value networks using the PPO algorithm.
+        
+        This method:
+        1. Computes advantages using GAE
+        2. Normalizes advantages
+        3. Performs multiple epochs of minibatch updates
+        4. Uses clipped surrogate objective for policy updates
+        5. Updates both actor and critic networks
+        6. Applies gradient clipping
+        7. Logs training metrics to TensorBoard
+        """
         if len(self.memory) < self.PPO_PARAMS['BATCH_SIZE']:
             return
         
@@ -433,7 +606,20 @@ class PPO:
         self.memory.clear()
 
     def training(self, trainingEnv, trainingParameters=[], verbose=True, rendering=True, plotTraining=True, showPerformance=True):
-        """Train the PPO agent"""
+        """
+        Train the PPO agent on the given environment.
+
+        Args:
+            trainingEnv (TradingEnv): Environment to train on
+            trainingParameters (list): List containing training parameters
+            verbose (bool): Whether to print training progress
+            rendering (bool): Whether to render training visualizations
+            plotTraining (bool): Whether to plot training metrics
+            showPerformance (bool): Whether to display performance metrics
+
+        Returns:
+            TradingEnv: Trained environment instance
+        """
         try:
             num_episodes = trainingParameters[0] if trainingParameters else 1
             episode_rewards = []
@@ -552,7 +738,7 @@ class PPO:
             # Assess the algorithm performance on the training trading environment
             trainingEnv = self.testing(trainingEnv, trainingEnv)
             
-            # If required, show the rendering of the trading environment
+            # If required, show the rendering of the training environment
             if rendering:
                 self.render_to_dir(trainingEnv)
             
@@ -584,7 +770,18 @@ class PPO:
                 self.writer.flush()  # Ensure all pending events are written
 
     def testing(self, trainingEnv, testingEnv, rendering=True, showPerformance=True):
-        """Test the trained policy on new data"""
+        """
+        Test the trained policy on new market data.
+
+        Args:
+            trainingEnv (TradingEnv): Environment used for training (for normalization)
+            testingEnv (TradingEnv): Environment to test on
+            rendering (bool): Whether to render test visualizations
+            showPerformance (bool): Whether to display performance metrics
+
+        Returns:
+            TradingEnv: Testing environment instance with results
+        """
         try:
             self.network.eval()
             coefficients = self.getNormalizationCoefficients(trainingEnv)
