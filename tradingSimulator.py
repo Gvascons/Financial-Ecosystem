@@ -16,6 +16,7 @@ import importlib
 import pickle
 import itertools
 import datetime
+import json
 
 import numpy as np
 import pandas as pd
@@ -689,6 +690,10 @@ class TradingSimulator:
         best_params = study.best_params
         print("Best hyperparameters:", best_params)
 
+        # Save best_params to a JSON file for future usage
+        with open("best_params.json", "w") as f:
+            json.dump(best_params, f, indent=4)
+
         min_holding_period = best_params['min_holding_period']
         max_holding_period = best_params['max_holding_period']
 
@@ -736,6 +741,9 @@ class TradingSimulator:
         # Show the entire unified rendering of the training and testing phases
         if rendering:
             self.plotEntireTrading(trainingEnv, testingEnv)
+
+        # after the final training completes:
+        torch.save(tradingStrategy.network.state_dict(), "my_best_ppo_model.pt")
 
         return tradingStrategy, trainingEnv, testingEnv
     
@@ -878,3 +886,124 @@ class TradingSimulator:
         print(tabulation)
 
         return performanceTable
+
+    def runSavedModel(self,
+                      model_path,
+                      PPO_PARAMS,
+                      stockSymbol,
+                      startingDate,
+                      splitingDate,
+                      endingDate,
+                      observationSpace,
+                      actionSpace,
+                      money,
+                      stateLength,
+                      transactionCosts,
+                      deterministic=True,
+                      rendering=False,
+                      showPerformance=True):
+        """
+        All we are doing is creating two TradingEnv objects:
+        1) A “training environment” (2012 to 2018) for the sole purpose of computing normalization coefficients (e.g., mean/std) so your final model sees states scaled exactly the same way as it did before.
+        2) A “test environment” (2018 to 2020) where you run the inference loop deterministically to replicate your final testing run.
+        There is no call to any training loop or backprop step in runSavedModel. 
+
+        Load a previously saved PPO policy and run a deterministic test 
+        just like the final step in your 'simulateNewStrategy' method.
+        We do:
+          1) Training env from (startingDate -> splitingDate) 
+             to compute normalization coefficients
+          2) Testing env from (splitingDate -> endingDate)
+             to run the final deterministic inference
+
+        Args:
+            model_path (str): Path to the saved model (e.g. "my_best_ppo_model.pt").
+            PPO_PARAMS (dict): Same PPO hyperparameters used in training 
+                               (HIDDEN_SIZE, LSTM_HIDDEN_SIZE, etc.).
+            stockSymbol (str): Ticker or synthetic name (e.g. "AAPL", "LINEARUP", etc.).
+            startingDate (str): Start date of the trading horizon (e.g. "2019-01-01").
+            endingDate (str): End date of the trading horizon (e.g. "2020-01-01").
+            splitingDate (str): Not strictly needed for the test env, but 
+                                if you want to do trainingEnv vs. testingEnv normalization,
+                                you can. Otherwise, you may skip or set it to None.
+            observationSpace (int): Dimension of the observation space.
+            actionSpace (int): Dimension of the action space.
+            money (float): Initial capital.
+            stateLength (int): How many timesteps the environment includes in each state.
+            transactionCosts (float): Transaction fee fraction (e.g. 0.001 => 0.1%).
+            deterministic (bool): Whether to use argmax action selection for testing.
+            rendering (bool): Whether to render the final trades chart to a .png file.
+            showPerformance (bool): If True, runs a PerformanceEstimator at the end 
+                                    to display metrics (PnL, Sharpe, etc.).
+
+        Returns:
+            TradingEnv: The environment instance after the test run (contains data for analysis).
+        """
+        import torch
+        from PPO import PPO
+        from tradingEnv import TradingEnv
+
+        # Ensure MEMORY_SIZE exists in PPO_PARAMS
+        PPO_PARAMS.setdefault('MEMORY_SIZE', 10000)
+
+        # 1) Create a training environment for normalization
+        trainingEnv = TradingEnv(
+            marketSymbol=stockSymbol, 
+            startingDate=startingDate,
+            endingDate=splitingDate,
+            money=money,
+            stateLength=stateLength,
+            transactionCosts=transactionCosts,
+            min_holding_period=PPO_PARAMS.get('min_holding_period', 1),
+            max_holding_period=PPO_PARAMS.get('max_holding_period', 200)
+        )
+
+        # 2) Create the testing environment for the final run
+        testingEnv = TradingEnv(
+            marketSymbol=stockSymbol,
+            startingDate=splitingDate, 
+            endingDate=endingDate,
+            money=money,
+            stateLength=stateLength,
+            transactionCosts=transactionCosts,
+            min_holding_period=PPO_PARAMS.get('min_holding_period', 1),
+            max_holding_period=PPO_PARAMS.get('max_holding_period', 200)
+        )
+
+        # 3) Build a new PPO agent with the same hyperparameters
+        agent = PPO(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stockSymbol, run_id=None)
+
+        # 4) Load the saved model weights and set to eval mode
+        agent.network.eval()
+
+        # Safely load only the state dict
+        state_dict = torch.load(model_path, weights_only=True)
+        agent.network.load_state_dict(state_dict)
+
+        # 5) If you use normalization, compute it from the trainingEnv
+        coefficients = agent.getNormalizationCoefficients(trainingEnv)
+
+        # 6) Run deterministic inference on the testing environment
+        state = testingEnv.reset()
+        done = False
+
+        while not done:
+            # Apply the same normalization as you do in training
+            state = agent.processState(state, coefficients)
+
+            # Deterministic => picks argmax
+            action, _, _ = agent.select_action(state, deterministic=deterministic)
+            next_state, reward, done, _ = testingEnv.step(action)
+            state = next_state
+
+        # If requested, render the final test chart
+        if rendering:
+            testingEnv.render()
+
+        # If requested, show performance metrics for the final test
+        if showPerformance:
+            from tradingPerformance import PerformanceEstimator
+            analyser = PerformanceEstimator(testingEnv.data)
+            analyser.displayPerformance(name='Loaded_PPO', phase='testing')
+
+        return testingEnv

@@ -429,7 +429,7 @@ class PPO:
         rewardClipping = 1  # Assuming this is a global variable or define it here
         return np.clip(reward, -rewardClipping, rewardClipping)
 
-    def select_action(self, state):
+    def select_action(self, state, deterministic=False):
         """
         Select an action from the current policy.
 
@@ -441,6 +441,10 @@ class PPO:
                 - action (int): Selected action index
                 - log_prob (float): Log probability of selected action
                 - value (float): Critic's value estimate for the state
+
+        If deterministic=True,
+        we pick argmax (the highest-probability action) instead of sampling
+        from the distribution.
         """
         try:
             # Convert state to tensor and move to CUDA
@@ -469,9 +473,17 @@ class PPO:
                 self.prev_state = state  # No need to clone, juststore the reference
             
             with torch.no_grad():
+                # Forward pass
                 probs, value = self.network(state)
                 dist = Categorical(probs)
-                action = dist.sample()
+                
+                if deterministic:
+                    # Pick the action with the highest probability
+                    action = torch.argmax(probs, dim=-1)
+                else:
+                    # Sample stochastically from the distribution
+                    action = dist.sample()
+                
                 log_prob = dist.log_prob(action)
             
             return action.item(), log_prob.item(), value.item()
@@ -795,7 +807,7 @@ class PPO:
             with torch.no_grad():
                 while not done:
                     # Use the same sampling method as in training
-                    action, _, _ = self.select_action(state)
+                    action, _, _ = self.select_action(state, deterministic=True)
                     
                     # Track action counts
                     action_counts[action] = action_counts.get(action, 0) + 1
