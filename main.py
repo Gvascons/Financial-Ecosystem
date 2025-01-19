@@ -36,8 +36,8 @@ if __name__ == '__main__':
     parser.add_argument("-rendering", action='store_true', help="Enable rendering during training and testing")
     parser.add_argument("-model_path", type=str, help="Path to saved model for inference mode")
     parser.add_argument("-start_date", default="2012-1-1", type=str, help="Starting date for training/testing")
-    parser.add_argument("-split_date", default="2018-1-1", type=str, help="Splitting date between train/test")
-    parser.add_argument("-end_date", default="2020-1-1", type=str, help="Ending date for training/testing")
+    parser.add_argument("-split_date", default="2024-1-1", type=str, help="Splitting date between train/test")
+    parser.add_argument("-end_date", default="2025-1-1", type=str, help="Ending date for training/testing")
     parser.add_argument("-initial_money", default=100000, type=float, help="Initial capital")
     parser.add_argument("-transaction_costs", default=0.001, type=float, help="Transaction costs as fraction")
     

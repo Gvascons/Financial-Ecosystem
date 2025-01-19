@@ -45,8 +45,8 @@ from TDQN import TDQN
 
 # Variables defining the default trading horizon
 startingDate = '2012-1-1'
-endingDate = '2020-1-1'
-splitingDate = '2018-1-1'
+endingDate = '2025-1-1'
+splitingDate = '2024-1-1'
 
 # Variables defining the default observation and state spaces
 stateLength = 30
@@ -586,7 +586,7 @@ class TradingSimulator:
                             startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=100, n_trials=50, rendering=False):
+                            numberOfEpisodes=2, n_trials=50, rendering=False):
         """
         Optimize hyperparameters for the specified strategy and stock.
         """
@@ -721,7 +721,7 @@ class TradingSimulator:
         }
 
         # Increase the number of episodes for final training
-        final_number_of_episodes = 100  # Adjust as needed
+        final_number_of_episodes = 2  # Adjust as needed
 
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"

@@ -676,12 +676,20 @@ class PPO:
             # Initialize testing environment
             if plotTraining or showPerformance:
                 marketSymbol = trainingEnv.marketSymbol
-                startingDate = trainingEnv.endingDate
-                endingDate = '2020-1-1'  # Adjust the ending date as needed
+                # If trainingEnv doesn't have splitingDate, just use its startingDate.
+                startingDate = trainingEnv.startingDate
+                endingDate = trainingEnv.endingDate
                 money = trainingEnv.data['Money'][0]
                 stateLength = trainingEnv.stateLength
                 transactionCosts = trainingEnv.transactionCosts
-                testingEnv = TradingEnv(marketSymbol, startingDate, endingDate, money, stateLength, transactionCosts)
+                testingEnv = TradingEnv(
+                    marketSymbol, 
+                    startingDate, 
+                    endingDate, 
+                    money, 
+                    stateLength, 
+                    transactionCosts
+                )
                 performanceTest = []
             
             # If required, print the training progression
