@@ -34,6 +34,7 @@ register_matplotlib_converters()
 from tradingEnv import TradingEnv
 from tradingPerformance import PerformanceEstimator
 from timeSeriesAnalyser import TimeSeriesAnalyser
+from pathlib import Path
 from TDQN import TDQN
 
 
@@ -690,8 +691,12 @@ class TradingSimulator:
         best_params = study.best_params
         print("Best hyperparameters:", best_params)
 
+        # Create a subfolder for this stock if you want to store everything
+        stock_subfolder = f"models/{stock}"
+        Path(stock_subfolder).mkdir(parents=True, exist_ok=True)
+
         # Save best_params to a JSON file for future usage
-        with open("best_params.json", "w") as f:
+        with open(os.path.join(stock_subfolder, "best_params.json"), "w") as f:
             json.dump(best_params, f, indent=4)
 
         min_holding_period = best_params['min_holding_period']
@@ -742,8 +747,10 @@ class TradingSimulator:
         if rendering:
             self.plotEntireTrading(trainingEnv, testingEnv)
 
+        best_model_path = os.path.join(stock_subfolder, "my_best_ppo_model.pt")
+
         # after the final training completes:
-        torch.save(tradingStrategy.network.state_dict(), "my_best_ppo_model.pt")
+        torch.save(tradingStrategy.network.state_dict(), best_model_path)
 
         return tradingStrategy, trainingEnv, testingEnv
     
@@ -904,8 +911,8 @@ class TradingSimulator:
                       showPerformance=True):
         """
         All we are doing is creating two TradingEnv objects:
-        1) A “training environment” (2012 to 2018) for the sole purpose of computing normalization coefficients (e.g., mean/std) so your final model sees states scaled exactly the same way as it did before.
-        2) A “test environment” (2018 to 2020) where you run the inference loop deterministically to replicate your final testing run.
+        1) A "training environment" (2012 to 2018) for the sole purpose of computing normalization coefficients (e.g., mean/std) so your final model sees states scaled exactly the same way as it did before.
+        2) A "test environment" (2018 to 2020) where you run the inference loop deterministically to replicate your final testing run.
         There is no call to any training loop or backprop step in runSavedModel. 
 
         Load a previously saved PPO policy and run a deterministic test 
@@ -996,9 +1003,15 @@ class TradingSimulator:
             next_state, reward, done, _ = testingEnv.step(action)
             state = next_state
 
-        # If requested, render the final test chart
+        # If requested, render the final test chart in the stock's subfolder
         if rendering:
-            testingEnv.render()
+            # Create subfolder for this stock's figures if it doesn't exist
+            fig_subfolder = f"Figs/{stockSymbol}_Loaded"
+            Path(fig_subfolder).mkdir(parents=True, exist_ok=True)
+            
+            # Save the figure in the stock's subfolder
+            fig_path = os.path.join(fig_subfolder, f"{stockSymbol}_Inference_Rendering.png")
+            testingEnv.render(save_path=fig_path)  # You might need to modify TradingEnv.render() to accept save_path
 
         # If requested, show performance metrics for the final test
         if showPerformance:

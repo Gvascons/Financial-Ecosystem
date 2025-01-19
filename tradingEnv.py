@@ -369,14 +369,13 @@ class TradingEnv(gym.Env):
         # Return the trading environment feedback to the RL trading agent
         return self.state, self.reward, self.done, {}
 
-    def render(self):
+    def render(self, save_path=None):
         """
-        GOAL: Illustrate graphically the trading activity, by plotting
-              both the evolution of the stock market price and the
-              evolution of the trading capital. All the trading decisions
-              (long and short positions) are displayed as well.
+        GOAL: Illustrate graphically the trading activity.
 
-        INPUTS: /
+        INPUTS: 
+            - save_path: Optional custom path to save the figure. 
+                        If None, uses default path.
 
         OUTPUTS: /
         """
@@ -407,7 +406,12 @@ class TradingEnv(gym.Env):
         ax1.legend(["Price", "Long",  "Short"])
         ax2.legend(["Capital", "Long", "Short"])
 
-        plt.savefig(''.join(['Figs/', str(self.marketSymbol), '_Rendering', '.png']))
+        # Save the figure
+        if save_path is None:
+            # Use default path if none provided
+            save_path = ''.join(['Figs/', str(self.marketSymbol), '_Rendering', '.png'])
+        
+        plt.savefig(save_path)
         plt.close(fig)
 
     def setStartingPoint(self, startingPoint):
