@@ -54,6 +54,12 @@ class PPONetwork(nn.Module):
         super().__init__()
         self.PPO_PARAMS = PPO_PARAMS  # Store PPO_PARAMS as an instance variable
         
+        # Set default values for missing parameters
+        self.PPO_PARAMS.setdefault('LSTM_DROPOUT', 0.0)
+        self.PPO_PARAMS.setdefault('LSTM_LAYERS', 2)
+        self.PPO_PARAMS.setdefault('LSTM_HIDDEN_SIZE', 128)
+        self.PPO_PARAMS.setdefault('HIDDEN_SIZE', 256)
+        
         self.num_features = 18  # Total number of features
         self.sequence_length = 30
         self.feature_dim = self.PPO_PARAMS['HIDDEN_SIZE']
@@ -218,6 +224,14 @@ class PPO:
                 'LSTM_LAYERS': 2,
                 'LSTM_DROPOUT': 0.2,
             }
+        
+        # Ensure all required parameters exist with defaults if missing
+        PPO_PARAMS.setdefault('MEMORY_SIZE', 10000)
+        PPO_PARAMS.setdefault('LSTM_DROPOUT', 0.0)
+        PPO_PARAMS.setdefault('LSTM_LAYERS', 2)
+        PPO_PARAMS.setdefault('LSTM_HIDDEN_SIZE', 128)
+        PPO_PARAMS.setdefault('HIDDEN_SIZE', 256)
+        
         self.PPO_PARAMS = PPO_PARAMS
         
         # Initialize network with correct input size
