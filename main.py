@@ -35,9 +35,10 @@ if __name__ == '__main__':
     parser.add_argument("-n_trials", default=50, type=int, help="Number of trials for hyperparameter optimization")
     parser.add_argument("-rendering", action='store_true', help="Enable rendering during training and testing")
     parser.add_argument("-model_path", type=str, help="Path to saved model for inference mode")
-    parser.add_argument("-start_date", default="2012-1-1", type=str, help="Starting date for training/testing")
-    parser.add_argument("-split_date", default="2024-1-1", type=str, help="Splitting date between train/test")
-    parser.add_argument("-end_date", default="2025-1-1", type=str, help="Ending date for training/testing")
+    parser.add_argument("-start_date", default="2012-01-01", type=str, help="Starting date for training/testing")
+    parser.add_argument("-validation_date", default="2023-01-01", type=str, help="Validation date for hyperparameter optimization")
+    parser.add_argument("-split_date", default="2024-01-01", type=str, help="Splitting date between train/test")
+    parser.add_argument("-end_date", default="2025-01-01", type=str, help="Ending date for training/testing")
     parser.add_argument("-initial_money", default=100000, type=float, help="Initial capital")
     parser.add_argument("-transaction_costs", default=0.001, type=float, help="Transaction costs as fraction")
     
@@ -54,10 +55,11 @@ if __name__ == '__main__':
             startingDate=args.start_date,
             endingDate=args.end_date,
             splitingDate=args.split_date,
+            validationDate=args.validation_date,
             money=args.initial_money,
             transactionCosts=args.transaction_costs,
             rendering=args.rendering,
-            saveStrategy=True  # Always save model after training
+            saveStrategy=True
         )
 
     elif args.mode == 'test':
@@ -85,12 +87,13 @@ if __name__ == '__main__':
             print(f"Error: Could not find model at {model_path}")
             exit(1)
             
-        # Run inference
+        # Run inference with correct date order
         simulator.runSavedModel(
             model_path=model_path,
             PPO_PARAMS=PPO_PARAMS,
             stockSymbol=args.stock,
             startingDate=args.start_date,
+            validationDate=args.validation_date,
             splitingDate=args.split_date,
             endingDate=args.end_date,
             observationSpace=30,
@@ -104,13 +107,14 @@ if __name__ == '__main__':
         )
 
     elif args.mode == 'optimize':
-        # Hyperparameter optimization mode
+        # Hyperparameter optimization mode with correct date order
         simulator.optimizeHyperparameters(
             args.strategy,
             args.stock,
             startingDate=args.start_date,
             endingDate=args.end_date,
             splitingDate=args.split_date,
+            validationDate=args.validation_date,
             money=args.initial_money,
             transactionCosts=args.transaction_costs,
             n_trials=args.n_trials,

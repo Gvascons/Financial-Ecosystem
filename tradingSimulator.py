@@ -44,9 +44,10 @@ from TDQN import TDQN
 ###############################################################################
 
 # Variables defining the default trading horizon
-startingDate = '2012-1-1'
-endingDate = '2025-1-1'
-splitingDate = '2024-1-1'
+startingDate = '2012-01-01'    # Training start (earliest)
+validationDate = '2023-01-01'  # Training end / Validation start
+splitingDate = '2024-01-01'    # Validation end / Test start
+endingDate = '2025-01-01'      # Test end (latest)
 
 # Variables defining the default observation and state spaces
 stateLength = 30
@@ -275,29 +276,44 @@ class TradingSimulator:
         analyser.cyclicityAnalysis()
 
 
-    def plotEntireTrading(self, trainingEnv, testingEnv):
+    def plotEntireTrading(self, trainingEnv, validationEnv=None, testingEnv=None):
         """
-        GOAL: Plot the entire trading activity, with both the training
-              and testing phases rendered on the same graph.
-        
-        INPUTS: - trainingEnv: Trading environment for training.
-                - testingEnv: Trading environment for testing.
-        
-        OUTPUTS: /
+        Plot the entire trading activity across training, validation and test sets.
         """
+        # First concatenate training and validation if validation exists
+        if validationEnv is not None:
+            ratio = trainingEnv.data['Money'][-1]/validationEnv.data['Money'][0]
+            validationEnv.data['Money'] = ratio * validationEnv.data['Money']
+        
+        # Then concatenate with testing if it exists
+        if testingEnv is not None:
+            ratio = (validationEnv.data['Money'][-1] if validationEnv is not None 
+                    else trainingEnv.data['Money'][-1])
+            ratio = ratio/testingEnv.data['Money'][0]
+            testingEnv.data['Money'] = ratio * testingEnv.data['Money']
 
-        # Artificial trick to assert the continuity of the Money curve
-        ratio = trainingEnv.data['Money'][-1]/testingEnv.data['Money'][0]
-        testingEnv.data['Money'] = ratio * testingEnv.data['Money']
-
-        # Concatenation of the training and testing trading dataframes
-        dataframes = [trainingEnv.data, testingEnv.data]
+        # Concatenate all available dataframes
+        dataframes = [trainingEnv.data]
+        if validationEnv is not None:
+            dataframes.append(validationEnv.data)
+        if testingEnv is not None:
+            dataframes.append(testingEnv.data)
         data = pd.concat(dataframes)
 
-        # Set the Matplotlib figure and subplots
+        # Rest of plotting code remains similar but add vertical lines for both splits
         fig = plt.figure(figsize=(10, 8))
         ax1 = fig.add_subplot(211, ylabel='Price', xlabel='Time')
         ax2 = fig.add_subplot(212, ylabel='Capital', xlabel='Time', sharex=ax1)
+
+        # Plot data...
+        
+        # Plot vertical lines for splits
+        if validationEnv is not None:
+            ax1.axvline(pd.Timestamp(splitingDate), color='black', linewidth=2.0, linestyle='--')
+            ax2.axvline(pd.Timestamp(splitingDate), color='black', linewidth=2.0, linestyle='--')
+        if testingEnv is not None:
+            ax1.axvline(pd.Timestamp(validationDate), color='black', linewidth=2.0)
+            ax2.axvline(pd.Timestamp(validationDate), color='black', linewidth=2.0)
 
         # Plot the first graph -> Evolution of the stock market price
         trainingEnv.data['Close'].plot(ax=ax1, color='blue', lw=2)
@@ -319,10 +335,6 @@ class TradingSimulator:
                  data['Money'][data['Action'] == -1.0],
                  'v', markersize=5, color='red')
 
-        # Plot the vertical line seperating the training and testing datasets
-        ax1.axvline(pd.Timestamp(splitingDate), color='black', linewidth=2.0)
-        ax2.axvline(pd.Timestamp(splitingDate), color='black', linewidth=2.0)
-        
         # Generation of the two legends and plotting
         ax1.legend(["Price", "Long",  "Short", "Train/Test separation"])
         ax2.legend(["Capital", "Long", "Short", "Train/Test separation"])
@@ -341,13 +353,13 @@ class TradingSimulator:
 
 
     def simulateNewStrategy(self, strategyName, stockName,
-                        startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
+                        startingDate=startingDate, endingDate=endingDate, 
+                        splitingDate=splitingDate, validationDate=validationDate,
                         observationSpace=observationSpace, actionSpace=actionSpace, 
                         money=money, stateLength=stateLength, transactionCosts=transactionCosts,
                         bounds=bounds, step=step, numberOfEpisodes=numberOfEpisodes,
                         verbose=True, plotTraining=True, rendering=True, showPerformance=True,
-                        saveStrategy=False,
-                        PPO_PARAMS=None, min_holding_period=10, max_holding_period=30):  # Add PPO_PARAMS
+                        saveStrategy=False, PPO_PARAMS=None, min_holding_period=10, max_holding_period=30):
         """
         Simulate a new trading strategy on a certain stock included in the testbench.
         """
@@ -361,6 +373,7 @@ class TradingSimulator:
                 - endingDate: Ending of the trading horizon.
                 - splitingDate: Spliting date between the training dataset
                                 and the testing dataset.
+                - validationDate: Validation date between the training and testing datasets.
                 - observationSpace: Size of the RL observation space.
                 - actionSpace: Size of the RL action space.
                 - money: Initial capital at the disposal of the agent.
@@ -456,7 +469,7 @@ class TradingSimulator:
             
         # Show the entire unified rendering of the training and testing phases
         if rendering:
-            self.plotEntireTrading(trainingEnv, testingEnv)
+            self.plotEntireTrading(trainingEnv, validationEnv=None, testingEnv=testingEnv)
 
 
         # 4. TERMINATION PHASE
@@ -578,18 +591,38 @@ class TradingSimulator:
 
         # Show the entire unified rendering of the training and testing phases
         if rendering:
-            self.plotEntireTrading(trainingEnv, testingEnv)
+            self.plotEntireTrading(trainingEnv, validationEnv=None, testingEnv=testingEnv)
 
         return tradingStrategy, trainingEnv, testingEnv
     
     def optimizeHyperparameters(self, strategyName, stockName,
-                            startingDate=startingDate, endingDate=endingDate, splitingDate=splitingDate,
+                            startingDate, endingDate, splitingDate, validationDate,
                             observationSpace=observationSpace, actionSpace=actionSpace, 
                             money=money, stateLength=stateLength, transactionCosts=transactionCosts,
-                            numberOfEpisodes=2, n_trials=50, rendering=False):
+                            numberOfEpisodes=3, n_trials=50, rendering=False):
         """
-        Optimize hyperparameters for the specified strategy and stock.
+        Optimize hyperparameters using Optuna.
+        Dates should be in chronological order: startingDate < validationDate < splitingDate < endingDate
         """
+        # Validate dates are in chronological order
+        dates = [
+            (startingDate, 'startingDate'),
+            (validationDate, 'validationDate'),
+            (splitingDate, 'splitingDate'),
+            (endingDate, 'endingDate')
+        ]
+        
+        # Convert to timestamps for comparison
+        dates = [(pd.Timestamp(date), name) for date, name in dates]
+        
+        # Check dates are in ascending order
+        for i in range(len(dates)-1):
+            if dates[i][0] >= dates[i+1][0]:
+                raise ValueError(
+                    f"Dates must be in chronological order: {dates[i][1]} ({dates[i][0]}) "
+                    f"must be before {dates[i+1][1]} ({dates[i+1][0]})"
+                )
+
         if strategyName != 'PPO':
             raise NotImplementedError("Hyperparameter optimization is currently implemented only for PPO.")
         
@@ -614,8 +647,8 @@ class TradingSimulator:
         def objective(trial):
             try:
                 # Sugerir períodos mínimo e máximo de holding
-                min_holding_period = trial.suggest_int('min_holding_period', 1, 30) ############################
-                max_holding_period = trial.suggest_int('max_holding_period', 50, 200) ############################
+                min_holding_period = trial.suggest_int('min_holding_period', 1, 30)
+                max_holding_period = trial.suggest_int('max_holding_period', 50, 200)
                 # Suggest number of LSTM layers
                 lstm_layers = trial.suggest_int('LSTM_LAYERS', 1, 3)
 
@@ -657,31 +690,58 @@ class TradingSimulator:
                 torch.manual_seed(seed)
                 random.seed(seed)
 
-                # Initialize the trading environment
-                trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
+                # Training environment (2012-01-01 → 2023-01-01)
+                trainEnv = TradingEnv(
+                    stock, 
+                    startingDate,     # 2012-01-01
+                    validationDate,   # 2023-01-01
+                    money, 
+                    stateLength, 
+                    transactionCosts, 
+                    min_holding_period=min_holding_period, 
+                    max_holding_period=max_holding_period
+                )
 
                 # Train the strategy
                 trainingParameters = [numberOfEpisodes]
-                trainingEnv = tradingStrategy.training(
-                    trainingEnv, trainingParameters=trainingParameters,
-                    verbose=False, rendering=False,
-                    plotTraining=False, showPerformance=False
+                trainEnv = tradingStrategy.training(
+                    trainEnv, 
+                    trainingParameters=trainingParameters,
+                    verbose=False, 
+                    rendering=False,
+                    plotTraining=False, 
+                    showPerformance=False
                 )
 
-                # Testing phase
-                testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
-                testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=False, showPerformance=False)
+                # Validation environment (2023-01-01 → 2024-01-01)
+                validEnv = TradingEnv(
+                    stock, 
+                    validationDate,   # 2023-01-01
+                    splitingDate,     # 2024-01-01
+                    money, 
+                    stateLength, 
+                    transactionCosts, 
+                    min_holding_period=min_holding_period, 
+                    max_holding_period=max_holding_period
+                )
 
-                # Evaluate performance
-                analyser = PerformanceEstimator(testingEnv.data)
+                # Evaluate on validation set
+                validEnv = tradingStrategy.testing(
+                    trainEnv, 
+                    validEnv, 
+                    rendering=False, 
+                    showPerformance=False
+                )
+
+                # Evaluate performance on validation data
+                analyser = PerformanceEstimator(validEnv.data)
                 performance = analyser.computeSharpeRatio()
 
-                # Optuna minimizes the objective, so return negative Sharpe Ratio
                 return -performance
         
             except Exception as e:
-                print(f"Trial {trial.number} failed with exception: {e}")
-                return float('inf')  # Return a high value to indicate failure
+                print(f"Trial {trial.number} failed with exception: {str(e)}")
+                return float('inf')
             
         # Create the Optuna study and optimize
         study = optuna.create_study(direction='minimize')
@@ -698,6 +758,10 @@ class TradingSimulator:
         # Save best_params to a JSON file for future usage
         with open(os.path.join(stock_subfolder, "best_params.json"), "w") as f:
             json.dump(best_params, f, indent=4)
+
+        # Get the strategy class reference before using it
+        strategyModule = importlib.import_module('PPO')
+        className = getattr(strategyModule, 'PPO')
 
         min_holding_period = best_params['min_holding_period']
         max_holding_period = best_params['max_holding_period']
@@ -720,39 +784,63 @@ class TradingSimulator:
             'LSTM_DROPOUT': best_params.get('LSTM_DROPOUT', 0.0),  # Use get() with default 0.0
         }
 
-        # Increase the number of episodes for final training
-        final_number_of_episodes = 2  # Adjust as needed
-
         # Generate a unique run_id for the final model
         run_id = f"run_PPO_{stock}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        # Train the final model with the best hyperparameters
-        trainingEnv = TradingEnv(stock, startingDate, splitingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
-        strategyModule = importlib.import_module('PPO')
-        className = getattr(strategyModule, 'PPO')
+        # Train the final model with the best hyperparameters on combined training + validation data
+        final_train_env = TradingEnv(
+            stock, 
+            startingDate,       # 2012-01-01
+            splitingDate,       # 2024-01-01
+            money, 
+            stateLength, 
+            transactionCosts, 
+            min_holding_period=min_holding_period, 
+            max_holding_period=max_holding_period
+        )
 
-        # Pass the run_id when initializing the PPO agent
+        # Now className is defined when we use it
         tradingStrategy = className(observationSpace, actionSpace, PPO_PARAMS, marketSymbol=stock, run_id=run_id)
+        trainingParameters = [numberOfEpisodes]
+        final_train_env = tradingStrategy.training(
+            final_train_env, 
+            trainingParameters=trainingParameters,
+            verbose=True, 
+            rendering=False,  # Don't render intermediate results
+            plotTraining=True, 
+            showPerformance=True
+        )
 
-        trainingParameters = [final_number_of_episodes]
-        trainingEnv = tradingStrategy.training(trainingEnv, trainingParameters=trainingParameters,
-                                           verbose=True, rendering=rendering,
-                                           plotTraining=True, showPerformance=True)
-
-        # Test the final model
-        testingEnv = TradingEnv(stock, splitingDate, endingDate, money, stateLength, transactionCosts, min_holding_period=min_holding_period, max_holding_period=max_holding_period)
-        testingEnv = tradingStrategy.testing(trainingEnv, testingEnv, rendering=rendering, showPerformance=True)
+        # Test only on the final test set (splitingDate -> endingDate)
+        final_test_env = TradingEnv(
+            stock, 
+            splitingDate,  # Start from spliting date
+            endingDate,      # End at end date
+            money, 
+            stateLength, 
+            transactionCosts, 
+            min_holding_period=min_holding_period, 
+            max_holding_period=max_holding_period
+        )
+        final_test_env = tradingStrategy.testing(
+            final_train_env, 
+            final_test_env, 
+            rendering=rendering, 
+            showPerformance=True
+        )
 
         # Show the entire unified rendering of the training and testing phases
         if rendering:
-            self.plotEntireTrading(trainingEnv, testingEnv)
+            self.plotEntireTrading(
+                trainingEnv=final_train_env,  # Contains training+validation data
+                testingEnv=final_test_env     # Contains only test data
+            )
 
+        # Save model
         best_model_path = os.path.join(stock_subfolder, "my_best_ppo_model.pt")
-
-        # after the final training completes:
         torch.save(tradingStrategy.network.state_dict(), best_model_path)
 
-        return tradingStrategy, trainingEnv, testingEnv
+        return tradingStrategy, final_train_env, final_test_env
     
 
     def evaluateStrategy(self, strategyName,
@@ -806,7 +894,7 @@ class TradingSimulator:
                 _, _, testingEnv = self.simulateExistingStrategy(strategyName, stock, startingDate, endingDate, splitingDate, observationSpace, actionSpace, money, stateLength, transactionCosts, rendering, showPerformance)
             except SystemError:
                 # Simulate a new trading strategy on the current stock
-                _, _, testingEnv = self.simulateNewStrategy(strategyName, stock, startingDate, endingDate, splitingDate, observationSpace, actionSpace, money, stateLength, transactionCosts, bounds, step, numberOfEpisodes, verbose, plotTraining, rendering, showPerformance, saveStrategy)
+                _, _, testingEnv = self.simulateNewStrategy(strategyName, stock, startingDate, endingDate, splitingDate, validationDate, observationSpace, actionSpace, money, stateLength, transactionCosts, bounds, step, numberOfEpisodes, verbose, plotTraining, rendering, showPerformance, saveStrategy)
 
             # Retrieve the trading performance associated with the trading strategy
             analyser = PerformanceEstimator(testingEnv.data)
@@ -877,7 +965,7 @@ class TradingSimulator:
                 _, _, testingEnv = self.simulateExistingStrategy(strategy, stockName, startingDate, endingDate, splitingDate, observationSpace, actionSpace, money, stateLength, transactionCosts, rendering, showPerformance)
             except SystemError:
                 # Simulate a new trading strategy on the stock
-                _, _, testingEnv = self.simulateNewStrategy(strategy, stockName, startingDate, endingDate, splitingDate, observationSpace, actionSpace, money, stateLength, transactionCosts, bounds, step, numberOfEpisodes, verbose, plotTraining, rendering, showPerformance, saveStrategy)
+                _, _, testingEnv = self.simulateNewStrategy(strategy, stockName, startingDate, endingDate, splitingDate, validationDate, observationSpace, actionSpace, money, stateLength, transactionCosts, bounds, step, numberOfEpisodes, verbose, plotTraining, rendering, showPerformance, saveStrategy)
 
             # Retrieve the trading performance associated with the trading strategy
             analyser = PerformanceEstimator(testingEnv.data)
@@ -894,57 +982,30 @@ class TradingSimulator:
 
         return performanceTable
 
-    def runSavedModel(self,
-                      model_path,
-                      PPO_PARAMS,
-                      stockSymbol,
-                      startingDate,
-                      splitingDate,
-                      endingDate,
-                      observationSpace,
-                      actionSpace,
-                      money,
-                      stateLength,
-                      transactionCosts,
-                      deterministic=True,
-                      rendering=False,
-                      showPerformance=True):
+    def runSavedModel(self, model_path, PPO_PARAMS, stockSymbol,
+                      startingDate, endingDate, splitingDate, validationDate,
+                      observationSpace=observationSpace, actionSpace=actionSpace,
+                      money=money, stateLength=stateLength, transactionCosts=transactionCosts,
+                      deterministic=True, rendering=True, showPerformance=True):
         """
-        All we are doing is creating two TradingEnv objects:
-        1) A "training environment" (2012 to 2018) for the sole purpose of computing normalization coefficients (e.g., mean/std) so your final model sees states scaled exactly the same way as it did before.
-        2) A "test environment" (2018 to 2020) where you run the inference loop deterministically to replicate your final testing run.
-        There is no call to any training loop or backprop step in runSavedModel. 
-
-        Load a previously saved PPO policy and run a deterministic test 
-        just like the final step in your 'simulateNewStrategy' method.
-        We do:
-          1) Training env from (startingDate -> splitingDate) 
-             to compute normalization coefficients
-          2) Testing env from (splitingDate -> endingDate)
-             to run the final deterministic inference
-
+        Run inference using a saved model.
+        
         Args:
-            model_path (str): Path to the saved model (e.g. "my_best_ppo_model.pt").
-            PPO_PARAMS (dict): Same PPO hyperparameters used in training 
-                               (HIDDEN_SIZE, LSTM_HIDDEN_SIZE, etc.).
-            stockSymbol (str): Ticker or synthetic name (e.g. "AAPL", "LINEARUP", etc.).
-            startingDate (str): Start date of the trading horizon (e.g. "2019-01-01").
-            endingDate (str): End date of the trading horizon (e.g. "2020-01-01").
-            splitingDate (str): Not strictly needed for the test env, but 
-                                if you want to do trainingEnv vs. testingEnv normalization,
-                                you can. Otherwise, you may skip or set it to None.
-            observationSpace (int): Dimension of the observation space.
-            actionSpace (int): Dimension of the action space.
-            money (float): Initial capital.
-            stateLength (int): How many timesteps the environment includes in each state.
-            transactionCosts (float): Transaction fee fraction (e.g. 0.001 => 0.1%).
-            deterministic (bool): Whether to use argmax action selection for testing.
-            rendering (bool): Whether to render the final trades chart to a .png file.
-            showPerformance (bool): If True, runs a PerformanceEstimator at the end 
-                                    to display metrics (PnL, Sharpe, etc.).
-
-        Returns:
-            TradingEnv: The environment instance after the test run (contains data for analysis).
+            model_path (str): Path to the saved model weights
+            PPO_PARAMS (dict): PPO hyperparameters
+            stockSymbol (str): Stock symbol to trade
+            startingDate (str): Start date for training data
+            endingDate (str): End date for testing data
+            splitingDate (str): Date that separates training from testing
+            validationDate (str): Date that separates training from validation
+            observationSpace (int): Dimension of the observation space
+            actionSpace (int): Dimension of the action space
+            money (float): Initial capital
+            stateLength (int): Number of timesteps in each state
+            transactionCosts (float): Transaction cost fraction
+            deterministic (bool): Whether to use deterministic action selection
+            rendering (bool): Whether to render the environment
+            showPerformance (bool): Whether to display performance metrics
         """
         import torch
         from PPO import PPO

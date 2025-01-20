@@ -331,8 +331,11 @@ class PerformanceEstimator:
         Compute, display and save the performance metrics.
         
         INPUTS: - name: Name of the strategy
-                - phase: Either 'training' or 'testing'
+                - phase: Either 'training', 'validation' or 'testing'
         """
+        if phase not in ['training', 'validation', 'testing']:
+            raise ValueError("phase must be one of: 'training', 'validation', 'testing'")
+        
         # Generation of the performance table
         self.computePerformance()
         
