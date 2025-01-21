@@ -475,3 +475,99 @@ class TradingEnv(gym.Env):
         reward = np.clip(reward * 10, -1, 1)
 
         return reward
+
+    def get_trade_history(self):
+        """
+        Get a detailed history of all trades executed, including position closures and their P&L.
+        """
+        trades = []
+        last_position = None
+        last_entry_price = None
+        last_shares = None
+        last_entry_date = None
+        
+        for i in range(1, len(self.data)):
+            if self.data['Action'][i] != 0:  # If there was a trade
+                date = self.data.index[i]
+                price = self.data['Close'][i]
+                action = "LONG" if self.data['Action'][i] == 1 else "SHORT"
+                
+                # Calculate number of shares involved
+                shares = abs(self.data['Holdings'][i] / price)
+                
+                # If there was a previous position, calculate its P&L
+                if last_position is not None:
+                    # Calculate actual hold period in trading days
+                    hold_period = len(pd.date_range(last_entry_date, date, freq='B')) - 1
+                    
+                    if last_position == "LONG":
+                        position_pnl = (price - last_entry_price) * last_shares
+                    else:  # SHORT
+                        position_pnl = (last_entry_price - price) * last_shares
+                    
+                    # Account for transaction costs
+                    position_pnl -= (last_entry_price * last_shares * self.transactionCosts)  # Entry cost
+                    position_pnl -= (price * last_shares * self.transactionCosts)  # Exit cost
+                    
+                    # Add position closure to trades
+                    trades.append({
+                        'Date': date,
+                        'Action': f"CLOSE {last_position}",
+                        'Shares': int(last_shares),
+                        'Price': price,
+                        'Position P&L': position_pnl,
+                        'Balance': self.data['Money'][i],
+                        'Hold Period': hold_period,
+                        'Return %': (position_pnl / self.data['Money'][i-1] * 100)
+                    })
+                
+                # Calculate cost/proceeds for new position
+                if action == "LONG":
+                    cost = -shares * price * (1 + self.transactionCosts)
+                else:
+                    cost = shares * price * (1 - self.transactionCosts)
+                
+                # Add new position entry to trades
+                trades.append({
+                    'Date': date,
+                    'Action': f"OPEN {action}",
+                    'Shares': int(shares),
+                    'Price': price,
+                    'Cost/Proceeds': cost,
+                    'Balance': self.data['Money'][i],
+                    'Hold Period': None  # No hold period for opening positions
+                })
+                
+                # Update tracking variables
+                last_position = action
+                last_entry_price = price
+                last_shares = shares
+                last_entry_date = date
+        
+        # Handle the last position if still open at the end
+        if last_position is not None:
+            final_date = self.data.index[-1]
+            final_price = self.data['Close'].iloc[-1]
+            hold_period = len(pd.date_range(last_entry_date, final_date, freq='B')) - 1
+            
+            if last_position == "LONG":
+                position_pnl = (final_price - last_entry_price) * last_shares
+            else:  # SHORT
+                position_pnl = (last_entry_price - final_price) * last_shares
+            
+            # Account for transaction costs
+            position_pnl -= (last_entry_price * last_shares * self.transactionCosts)  # Entry cost
+            position_pnl -= (final_price * last_shares * self.transactionCosts)  # Exit cost
+            
+            trades.append({
+                'Date': final_date,
+                'Action': f"CLOSE {last_position}",
+                'Shares': int(last_shares),
+                'Price': final_price,
+                'Position P&L': position_pnl,
+                'Balance': self.data['Money'].iloc[-1],
+                'Hold Period': hold_period,
+                'Return %': (position_pnl / self.data['Money'].iloc[-2] * 100)
+            })
+        
+        return pd.DataFrame(trades)

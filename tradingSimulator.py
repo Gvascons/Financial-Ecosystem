@@ -1080,4 +1080,63 @@ class TradingSimulator:
             analyser = PerformanceEstimator(testingEnv.data)
             analyser.displayPerformance(name='Loaded_PPO', phase='testing')
 
+        # Get and display trade history
+        trade_history = testingEnv.get_trade_history()
+        
+        if not trade_history.empty:
+            print("\nTRADE HISTORY:")
+            print("=============")
+            
+            # Format the trade history for display
+            pd.set_option('display.float_format', lambda x: '%.2f' % x)
+            formatted_trades = trade_history.copy()
+            formatted_trades['Date'] = formatted_trades['Date'].dt.strftime('%Y-%m-%d')
+            formatted_trades['Price'] = formatted_trades['Price'].map('${:,.2f}'.format)
+            
+            # Format monetary columns if they exist
+            if 'Cost/Proceeds' in formatted_trades.columns:
+                formatted_trades['Cost/Proceeds'] = formatted_trades['Cost/Proceeds'].map('${:,.2f}'.format)
+            if 'Position P&L' in formatted_trades.columns:
+                formatted_trades['Position P&L'] = formatted_trades['Position P&L'].map('${:,.2f}'.format)
+            
+            formatted_trades['Balance'] = formatted_trades['Balance'].map('${:,.2f}'.format)
+            
+            # Format return percentage
+            if 'Return %' in formatted_trades.columns:
+                formatted_trades['Return %'] = formatted_trades['Return %'].apply(
+                    lambda x: f"{x:.2f}%" if pd.notna(x) else ""
+                )
+            
+            print(formatted_trades.to_string(index=False))
+            
+            # Save trade history to CSV
+            csv_path = os.path.join(f"models/{stockSymbol}", "trade_history.csv")
+            trade_history.to_csv(csv_path, index=False)
+            print(f"\nTrade history saved to: {csv_path}")
+            
+            # Print summary statistics
+            print("\nTRADE SUMMARY:")
+            print("=============")
+            print(f"Total number of trades: {len(trade_history)//2}")  # Divide by 2 since each trade has open/close
+            print(f"Long positions: {len(trade_history[trade_history['Action'] == 'OPEN LONG'])}")
+            print(f"Short positions: {len(trade_history[trade_history['Action'] == 'OPEN SHORT'])}")
+
+            # Calculate average position size and profitability metrics
+            open_trades = trade_history[trade_history['Action'].str.startswith('OPEN')]
+            closed_trades = trade_history[trade_history['Action'].str.startswith('CLOSE')]
+
+            avg_position = open_trades['Shares'].mean()
+            print(f"Average position size: {int(avg_position)} shares")
+
+            # Add profitability metrics
+            profitable_trades = closed_trades[closed_trades['Position P&L'] > 0]
+            print(f"\nProfitability Metrics:")
+            print(f"Profitable trades: {len(profitable_trades)} out of {len(closed_trades)} ({len(profitable_trades)/len(closed_trades)*100:.1f}%)")
+            print(f"Average profit on winning trades: ${profitable_trades['Position P&L'].mean():.2f}")
+            print(f"Average loss on losing trades: ${closed_trades[closed_trades['Position P&L'] < 0]['Position P&L'].mean():.2f}")
+            print(f"Average hold period: {closed_trades['Hold Period'].mean():.1f} days")
+            
+        else:
+            print("\nNo trades were executed during the test period.")
+        
         return testingEnv
